@@ -33,7 +33,7 @@ struct ScannerSelfTest {
         let log = dayFolder.appendingPathComponent("rollout-test.jsonl")
         let lines = [
             #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"session_meta","payload":{"model_provider":"third-party-provider"}}"#,
-            #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"turn_context","payload":{"model":"future-codex-model-x"}}"#,
+            #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"turn_context","payload":{"model":"future-codex-model-x","summary":"Dashboard context title"}}"#,
             #"{"timestamp":"2026-08-14T02:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":100},"last_token_usage":{"input_tokens":80,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":100},"model_context_window":400000},"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":10080,"resets_at":1787241518},"plan_type":"plus"}}}"#,
             #"{"timestamp":"2026-08-14T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":250},"last_token_usage":{"input_tokens":120,"cached_input_tokens":60,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":150},"model_context_window":400000},"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":10080,"resets_at":1787241518},"plan_type":"plus"}}}"#
         ].joined(separator: "\n") + "\n"
@@ -45,6 +45,7 @@ struct ScannerSelfTest {
 
         try expect(snapshot.currentModel == "future-codex-model-x", "dynamic model was not detected")
         try expect(snapshot.currentProvider == "third-party-provider", "model provider was not detected")
+        try expect(snapshot.currentConversationTitle == "Dashboard context title", "context title was not detected")
         try expect(snapshot.currentSessionUsage.totalTokens == 250, "session token total is incorrect")
         try expect(snapshot.lastCallUsage.totalTokens == 150, "last call size is incorrect")
         try expect(snapshot.contextWindow == 400_000, "dynamic context window is incorrect")

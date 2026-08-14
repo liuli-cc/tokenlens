@@ -73,9 +73,12 @@ struct DashboardView: View {
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("\(store.snapshot.currentProvider)  ·  \(store.snapshot.currentSource)")
+                    Text(store.snapshot.currentConversationTitle)
                         .font(.system(size: 8.5, design: .monospaced))
                         .foregroundStyle(Color.tokenMuted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
                 }
                 .frame(maxWidth: 250, alignment: .leading)
             }

@@ -11,6 +11,7 @@ TokenLens is a native macOS background companion for Codex / ChatGPT usage. It s
 - **Token usage** — Input, cached input, output, and total tokens.
 - **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
 - **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
+- **Current conversation title** — Reads only the focused ChatGPT window title through macOS Accessibility. When it is unavailable, a non-empty Codex session summary is used as a fallback.
 - **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. External models are labeled `CC Switch`.
 - **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
 
@@ -53,6 +54,7 @@ TokenLens reads only local files:
 - `~/.cc-switch/cc-switch.db` when CC Switch is installed, queried through a read-only SQLite URI.
 
 It does not require an API key, upload logs, or load user/assistant message bodies into the dashboard. Metrics are kept in memory.
+To show the focused ChatGPT conversation title, grant TokenLens access in **System Settings → Privacy & Security → Accessibility**. TokenLens reads only the window title attribute, not the conversation body.
 
 ## Known limitations
 

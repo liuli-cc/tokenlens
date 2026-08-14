@@ -147,6 +147,10 @@ actor CodexLogScanner {
                     digest.unattributedTokens = 0
                 }
             }
+            if let summary = payload["summary"] as? String,
+               let title = normalizedConversationTitle(summary) {
+                digest.currentConversationTitle = title
+            }
             digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
             return
         }
@@ -278,6 +282,7 @@ actor CodexLogScanner {
             currentModel: active?.currentModel.nonEmpty ?? "等待 Codex",
             currentProvider: activeProvider,
             currentSource: activeSource,
+            currentConversationTitle: active?.currentConversationTitle.nonEmpty ?? "当前会话（正在识别标题）",
             currentSessionUsage: active?.latestTotal ?? .zero,
             lastCallUsage: active?.lastCall ?? .zero,
             contextWindow: active?.contextWindow ?? 0,
@@ -297,6 +302,16 @@ actor CodexLogScanner {
         case "unknown", "": return "未知提供商"
         default: return raw
         }
+    }
+
+    private func normalizedConversationTitle(_ raw: String) -> String? {
+        let title = raw
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        let placeholders = ["none", "null", "n/a", "auto"]
+        guard !title.isEmpty,
+              !placeholders.contains(title.lowercased()) else { return nil }
+        return title
     }
 
     private func modelUsageComesFirst(_ lhs: ModelUsage, _ rhs: ModelUsage) -> Bool {
@@ -365,6 +380,7 @@ private struct SessionDigest: Sendable {
     let url: URL
     var currentModel = ""
     var currentProvider = "openai"
+    var currentConversationTitle = ""
     var latestTotal: TokenUsage = .zero
     var previousTotal: TokenUsage = .zero
     var lastCall: TokenUsage = .zero

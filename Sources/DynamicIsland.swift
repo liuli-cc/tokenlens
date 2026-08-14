@@ -53,8 +53,8 @@ final class IslandViewModel: ObservableObject {
 
 @MainActor
 final class IslandPanelController {
-    private let compactDesignSize = NSSize(width: 430, height: 33)
-    private let compactSize = NSSize(width: 358, height: 33)
+    private let compactDesignSize = NSSize(width: 430, height: 33.5)
+    private let compactSize = NSSize(width: 358, height: 33.5)
     private let expandedSize = NSSize(width: 548, height: 148)
     private let topInset: CGFloat = 0
 
@@ -382,8 +382,8 @@ private struct DynamicIslandView: View {
     private var islandShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0,
-            bottomLeadingRadius: viewModel.isExpanded ? 30 : 16.5,
-            bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.5,
+            bottomLeadingRadius: viewModel.isExpanded ? 30 : 16.75,
+            bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.75,
             topTrailingRadius: 0,
             style: .continuous
         )
@@ -401,7 +401,7 @@ private struct DynamicIslandView: View {
                         .font(.system(size: 10.5, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(store.snapshot.currentProvider)
+                    Text(compactContextTitle)
                         .font(.system(size: 7.5, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.50))
                         .lineLimit(1)
@@ -445,7 +445,7 @@ private struct DynamicIslandView: View {
                             .font(.system(size: 11.5, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text(store.snapshot.currentProvider)
+                        Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentConversationTitle)")
                             .font(.system(size: 8, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.48))
                     }
@@ -502,6 +502,11 @@ private struct DynamicIslandView: View {
     private var compactModelName: String {
         let name = store.snapshot.currentModel
         return name.count > 15 ? String(name.prefix(14)) + "…" : name
+    }
+
+    private var compactContextTitle: String {
+        let title = store.snapshot.currentConversationTitle
+        return title.count > 23 ? String(title.prefix(22)) + "…" : title
     }
 }
 

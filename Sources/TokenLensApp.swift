@@ -17,6 +17,8 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        ChatGPTContextTitleReader().requestAccessIfNeeded()
+
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(workspaceApplicationTerminated(_:)),

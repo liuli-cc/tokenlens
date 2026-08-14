@@ -72,6 +72,7 @@ struct UsageSnapshot: Equatable, Sendable {
     var currentModel: String = "等待 Codex"
     var currentProvider: String = "OpenAI"
     var currentSource: String = "Codex"
+    var currentConversationTitle: String = "当前会话（正在识别标题）"
     var currentSessionUsage: TokenUsage = .zero
     var lastCallUsage: TokenUsage = .zero
     var contextWindow: Int64 = 0
