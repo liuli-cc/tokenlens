@@ -4,6 +4,15 @@ TokenLens is a native macOS background companion for Codex / ChatGPT usage. It s
 
 [中文说明 / Chinese](#中文说明)
 
+## Choose a platform
+
+| Platform | Project | Status |
+| --- | --- | --- |
+| macOS | `Sources/` + `BridgeSources/` | Native build and ChatGPT lifecycle integration |
+| Windows 10/11 | `windows/TokenLens.Windows/` | WPF/.NET 8 preview; build on Windows |
+
+For Windows-specific requirements and commands, see [`windows/README.md`](windows/README.md).
+
 ## Features
 
 - **Dynamic Island UI** — Move the pointer to the top-center area to reveal a slow, elastic expansion; leaving the island collapses it immediately.

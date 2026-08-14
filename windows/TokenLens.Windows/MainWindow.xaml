@@ -1,0 +1,65 @@
+<Window x:Class="TokenLens.Windows.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Width="358"
+        Height="33"
+        Top="0"
+        ShowActivated="False">
+    <Border x:Name="IslandSurface"
+            Background="#FF000000"
+            CornerRadius="0,0,16.5,16.5"
+            Padding="14,0"
+            MouseLeftButtonUp="IslandSurface_OnMouseLeftButtonUp">
+        <Grid>
+            <Grid x:Name="CompactContent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="176" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="⌁" Foreground="White" FontSize="15" Margin="0,0,8,0" />
+                    <StackPanel>
+                        <TextBlock x:Name="CompactModel" Text="Waiting for Codex" Foreground="White" FontWeight="SemiBold" FontSize="11" />
+                        <TextBlock x:Name="CompactProvider" Text="OpenAI" Foreground="#80FFFFFF" FontSize="8" />
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <TextBlock x:Name="CompactQuota" Text="--" Foreground="White" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right" />
+                    <TextBlock Text="quota remaining" Foreground="#75FFFFFF" FontSize="8" HorizontalAlignment="Right" />
+                </StackPanel>
+            </Grid>
+
+            <Grid x:Name="ExpandedContent" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="35" />
+                    <RowDefinition Height="48" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="24" Height="24" Fill="White" Margin="0,0,9,0" />
+                    <StackPanel>
+                        <TextBlock x:Name="ExpandedModel" Text="Waiting for Codex" Foreground="White" FontWeight="SemiBold" FontSize="12" />
+                        <TextBlock x:Name="ExpandedProvider" Text="OpenAI" Foreground="#80FFFFFF" FontSize="8" />
+                    </StackPanel>
+                    <StackPanel HorizontalAlignment="Right">
+                        <TextBlock x:Name="ExpandedQuota" Text="--" Foreground="White" FontWeight="Bold" FontSize="12" HorizontalAlignment="Right" />
+                        <TextBlock Text="quota remaining" Foreground="#75FFFFFF" FontSize="8" HorizontalAlignment="Right" />
+                    </StackPanel>
+                </StackPanel>
+                <UniformGrid Grid.Row="1" Rows="1" Margin="0,3,0,3">
+                    <StackPanel><TextBlock x:Name="MetricTokens" Foreground="White" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" /><TextBlock Text="TOKENS" Foreground="#70FFFFFF" FontSize="8" HorizontalAlignment="Center" /></StackPanel>
+                    <StackPanel><TextBlock x:Name="MetricContext" Foreground="White" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" /><TextBlock Text="CONTEXT" Foreground="#70FFFFFF" FontSize="8" HorizontalAlignment="Center" /></StackPanel>
+                    <StackPanel><TextBlock x:Name="MetricCache" Foreground="White" FontWeight="Bold" FontSize="12" HorizontalAlignment="Center" /><TextBlock Text="CACHE HIT" Foreground="#70FFFFFF" FontSize="8" HorizontalAlignment="Center" /></StackPanel>
+                </UniformGrid>
+                <TextBlock Grid.Row="2" Text="Click to open the full Windows dashboard (coming next)." Foreground="#65FFFFFF" FontSize="9" />
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
