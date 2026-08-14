@@ -14,35 +14,42 @@ struct ChatGPTContextTitleReader {
     func currentTitle() -> String? {
         guard AXIsProcessTrusted() else { return nil }
 
-        let applications = NSWorkspace.shared.runningApplications.filter {
-            $0.bundleIdentifier == chatGPTBundleIdentifier
-        }
+        let applications = NSWorkspace.shared.runningApplications.filter(isChatGPT)
 
         for application in applications {
             let appElement = AXUIElementCreateApplication(application.processIdentifier)
-            var windowValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-                appElement,
-                kAXFocusedWindowAttribute as CFString,
-                &windowValue
-            ) == .success,
-            let windowValue,
-            CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { continue }
-            let window = unsafeDowncast(windowValue, to: AXUIElement.self)
+            for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+                var windowValue: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    appElement,
+                    attribute as CFString,
+                    &windowValue
+                ) == .success,
+                let windowValue,
+                CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { continue }
+                let window = unsafeDowncast(windowValue, to: AXUIElement.self)
 
-            var titleValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-                window,
-                kAXTitleAttribute as CFString,
-                &titleValue
-            ) == .success,
-            let title = titleValue as? String,
-            let normalized = normalizedTitle(title) else { continue }
+                var titleValue: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    window,
+                    kAXTitleAttribute as CFString,
+                    &titleValue
+                ) == .success,
+                let title = titleValue as? String,
+                let normalized = normalizedTitle(title) else { continue }
 
-            return normalized
+                return normalized
+            }
         }
 
         return nil
+    }
+
+    private func isChatGPT(_ application: NSRunningApplication) -> Bool {
+        application.bundleIdentifier == chatGPTBundleIdentifier
+            || application.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
+            || application.localizedName == "ChatGPT"
+            || application.localizedName == "Codex"
     }
 
     private func normalizedTitle(_ raw: String) -> String? {
