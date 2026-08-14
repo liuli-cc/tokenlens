@@ -1,24 +1,26 @@
 # TokenLens
 
-TokenLens 是一个原生 macOS 菜单栏级后台助手，用来观察本机 Codex / ChatGPT 的 Token 使用情况。它不创建 Dock 图标，也不要求单独打开：打开 ChatGPT 时自动出现，退出 ChatGPT 时自动退出。
+TokenLens is a native macOS background companion for Codex / ChatGPT usage. It shows a minimal black-and-white Dynamic Island at the top of the screen, starts with ChatGPT, and exits when ChatGPT exits.
 
-## 功能
+[中文说明 / Chinese](#中文说明)
 
-- 顶部黑白动态岛：鼠标靠近屏幕顶部中央时由小到大展开，离开后快速收起。
-- 当前模型与提供商：从 Codex 会话日志识别 `turn_context.payload.model` 和 `session_meta.payload.model_provider`。
-- Token 消耗：输入、缓存输入、输出和总量。
-- ChatGPT / Codex 共享额度剩余百分比。
-- 上下文窗口、当前长度、缓存命中率和近 7 日趋势。
-- CC Switch 外部模型：读取 `~/.cc-switch/cc-switch.db` 中的 Codex 提供商、模型目录和近 30 日代理请求用量，并在界面标注来源。
-- 详细面板：点击展开的小岛查看全部模型、趋势和指标口径。
+## Features
 
-## 环境要求
+- **Dynamic Island UI** — Move the pointer to the top-center area to reveal a slow, elastic expansion; leaving the island collapses it immediately.
+- **Model and provider detection** — Reads `turn_context.payload.model` and `session_meta.payload.model_provider` from local Codex sessions.
+- **Token usage** — Input, cached input, output, and total tokens.
+- **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
+- **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
+- **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. External models are labeled `CC Switch`.
+- **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
 
-- macOS 14 或更高版本（Apple Silicon 优先）。
-- 已安装 `/Applications/ChatGPT.app`，且该应用使用 Codex 会话日志。
-- 可选：CC Switch。未安装或数据库不存在时，CC Switch 区域会自动为空，不影响 Codex 日志统计。
+## Requirements
 
-## 构建与安装
+- macOS 14 or later (Apple Silicon recommended).
+- ChatGPT installed at `/Applications/ChatGPT.app`.
+- Optional: CC Switch. If its database is not present, Codex log tracking continues normally.
+
+## Build and install
 
 ```bash
 chmod +x build.sh install.sh
@@ -26,38 +28,61 @@ chmod +x build.sh install.sh
 ./install.sh
 ```
 
-`build.sh` 会运行扫描器自测、编译两个 Swift 可执行文件，并生成签名的 `dist/TokenLens.app`。
+`build.sh` runs the scanner self-test, builds the two Swift executables, packages `dist/TokenLens.app`, and signs the bundle locally.
 
-`install.sh` 会把当前构建注册为当前用户的 LaunchAgent：
+`install.sh` registers a per-user LaunchAgent at:
 
 ```text
 ~/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist
 ```
 
-安装完成后，重新打开 ChatGPT 即可看到顶部小岛。若 ChatGPT 已经打开，等待约 1 秒即可自动同步。
+After installation, reopen ChatGPT. TokenLens will appear automatically. If ChatGPT is already running, synchronization normally takes about one second.
 
-卸载自动联动：
+To remove the automatic ChatGPT integration:
 
 ```bash
 launchctl bootout "gui/$(id -u)/cn.liuli.tokenlens.chatgpt-bridge" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist"
 ```
 
-## 数据与隐私
+## Data and privacy
 
-TokenLens 只在本机读取：
+TokenLens reads only local files:
 
-- `~/.codex/sessions/**/*.jsonl` 中与 Token、模型、上下文相关的事件；
-- 可选的 `~/.cc-switch/cc-switch.db`（以只读 SQLite URI 查询）。
+- `~/.codex/sessions/**/*.jsonl` for token, model, context, and rate-limit events;
+- `~/.cc-switch/cc-switch.db` when CC Switch is installed, queried through a read-only SQLite URI.
 
-它不需要 API Key，不上传日志，也不会把用户消息或助手正文加载到仪表盘。统计结果仅保存在内存中。
+It does not require an API key, upload logs, or load user/assistant message bodies into the dashboard. Metrics are kept in memory.
 
-## 已知限制
+## Known limitations
 
-- 额度百分比依赖 Codex 日志中最新的 rate-limit 事件；没有该事件时显示 `--`。
-- CC Switch 的统计依赖其数据库结构和代理请求日志；不同版本可能导致部分外部模型暂时不可见。
-- TokenLens 目前只联动 `/Applications/ChatGPT.app`，如应用被移动，需要同步修改 `BridgeSources/TokenLensBridge.swift` 中的路径判断。
+- Quota percentage is `--` until a rate-limit event is available in the local Codex logs.
+- CC Switch coverage depends on its local schema and proxy request logs; some versions may expose fewer external-model records.
+- The ChatGPT lifecycle bridge currently matches `/Applications/ChatGPT.app`. If ChatGPT is moved, update the path check in `BridgeSources/TokenLensBridge.swift`.
 
-## 开源协议
+## License
 
-本项目以 MIT License 开源，见 [LICENSE](LICENSE)。
+MIT License. See [LICENSE](LICENSE).
+
+---
+
+## 中文说明
+
+TokenLens 是一个原生 macOS 后台助手，用来观察本机 Codex / ChatGPT 的 Token 使用情况。它不创建 Dock 图标，也不要求单独打开：打开 ChatGPT 时自动出现，退出 ChatGPT 时自动退出。
+
+### 功能
+
+- 顶部黑白动态岛：鼠标靠近屏幕顶部中央时缓慢展开，离开后立即收起。
+- 自动识别当前模型与提供商，并清晰标注 Codex 或 CC Switch 外部模型来源。
+- 显示 Token 消耗、共享额度剩余百分比、上下文长度、当前长度、缓存命中率和近 7 日趋势。
+- 点击展开的小岛查看详细统计面板。
+
+### 使用
+
+```bash
+chmod +x build.sh install.sh
+./build.sh
+./install.sh
+```
+
+安装后重新打开 `/Applications/ChatGPT.app` 即可使用。统计数据只在本机读取 `~/.codex/sessions` 和可选的 `~/.cc-switch/cc-switch.db`，不需要 API Key，不上传日志，也不解析对话正文。
