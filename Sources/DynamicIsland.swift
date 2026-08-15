@@ -401,7 +401,7 @@ private struct DynamicIslandView: View {
                         .font(.system(size: 10.5, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(compactContextTitle)
+                    Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
                         .font(.system(size: 7.5, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.50))
                         .lineLimit(1)
@@ -414,7 +414,7 @@ private struct DynamicIslandView: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                Text(compactMetricValue)
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
                 Text(store.snapshot.quotaMetricTitle)
@@ -445,7 +445,7 @@ private struct DynamicIslandView: View {
                             .font(.system(size: 11.5, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentConversationTitle)")
+                        Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
                             .font(.system(size: 8, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.48))
                     }
@@ -457,7 +457,9 @@ private struct DynamicIslandView: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                    Text(store.snapshot.usesExternalModel
+                        ? store.snapshot.balanceDisplayValue
+                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
                         .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white)
                     Text(store.isScanning ? "正在扫描" : store.snapshot.sharedQuotaMetricTitle)
@@ -471,7 +473,12 @@ private struct DynamicIslandView: View {
             HStack(spacing: 0) {
                 IslandMetric(title: "今日 TOKEN", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
                 divider
-                IslandMetric(title: store.snapshot.quotaMetricTitle, value: store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                IslandMetric(
+                    title: store.snapshot.quotaMetricTitle,
+                    value: store.snapshot.usesExternalModel
+                        ? store.snapshot.balanceDisplayValue
+                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
+                )
                 divider
                 IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
                 divider
@@ -504,9 +511,11 @@ private struct DynamicIslandView: View {
         return name.count > 15 ? String(name.prefix(14)) + "…" : name
     }
 
-    private var compactContextTitle: String {
-        let title = store.snapshot.currentConversationTitle
-        return title.count > 23 ? String(title.prefix(22)) + "…" : title
+    private var compactMetricValue: String {
+        let value = store.snapshot.usesExternalModel
+            ? store.snapshot.balanceDisplayValue
+            : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
+        return value.count > 10 ? String(value.prefix(9)) + "…" : value
     }
 }
 

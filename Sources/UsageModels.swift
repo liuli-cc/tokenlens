@@ -41,6 +41,29 @@ struct RateLimitWindow: Equatable, Sendable {
     }
 }
 
+struct ProviderBalance: Equatable, Sendable {
+    struct Amount: Equatable, Sendable {
+        let currency: String
+        let value: Double
+
+        var displayValue: String {
+            let valueText = String(format: "%.2f", value)
+            switch currency.uppercased() {
+            case "CNY", "RMB": return "¥\(valueText)"
+            case "USD": return "$\(valueText)"
+            default: return "\(currency.uppercased()) \(valueText)"
+            }
+        }
+    }
+
+    let amounts: [Amount]
+    let fetchedAt: Date
+
+    var displayValue: String {
+        amounts.map(\.displayValue).joined(separator: " / ")
+    }
+}
+
 struct DayUsage: Identifiable, Equatable, Sendable {
     let date: Date
     let usage: TokenUsage
@@ -72,11 +95,11 @@ struct UsageSnapshot: Equatable, Sendable {
     var currentModel: String = "等待 Codex"
     var currentProvider: String = "OpenAI"
     var currentSource: String = "Codex"
-    var currentConversationTitle: String = "当前会话（正在识别标题）"
     var currentSessionUsage: TokenUsage = .zero
     var lastCallUsage: TokenUsage = .zero
     var contextWindow: Int64 = 0
     var quota: RateLimitWindow?
+    var providerBalance: ProviderBalance?
     var dailyUsage: [DayUsage] = []
     var modelUsage: [ModelUsage] = []
     var configuredModels: [ConfiguredModel] = []
@@ -114,7 +137,11 @@ struct UsageSnapshot: Equatable, Sendable {
     }
 
     var sharedQuotaMetricTitle: String {
-        usesExternalModel ? "共享余额剩余" : "共享额度剩余"
+        usesExternalModel ? "官方余额" : "共享额度剩余"
+    }
+
+    var balanceDisplayValue: String {
+        providerBalance?.displayValue ?? "不可读取"
     }
 }
 

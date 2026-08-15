@@ -11,8 +11,7 @@ TokenLens is a native macOS background companion for Codex / ChatGPT usage. It s
 - **Token usage** — Input, cached input, output, and total tokens.
 - **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
 - **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
-- **Current conversation title** — Reads the active Codex thread title from local `~/.codex` state, with the focused window title and session summary as fallbacks.
-- **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. External models are labeled `CC Switch`.
+- **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. For active DeepSeek and Kimi providers, it displays the real balance returned by each provider's official API; a provider without a readable official balance endpoint is clearly labeled unavailable.
 - **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
 
 ## Requirements
@@ -51,16 +50,14 @@ rm -f "$HOME/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist"
 TokenLens reads only local files:
 
 - `~/.codex/sessions/**/*.jsonl` for token, model, context, and rate-limit events;
-- `~/.codex/state_*.sqlite` and `~/.codex/session_index.jsonl` for the active conversation title;
 - `~/.cc-switch/cc-switch.db` when CC Switch is installed, queried through a read-only SQLite URI.
 
-It does not require an API key, upload logs, or load user/assistant message bodies into the dashboard. Metrics are kept in memory.
-To show the focused ChatGPT conversation title, grant TokenLens access in **System Settings → Privacy & Security → Accessibility**. TokenLens reads only the window title attribute, not the conversation body.
+It never uploads logs or loads user/assistant message bodies into the dashboard. For a supported external provider, the API key already stored by CC Switch is used only in local memory to make that provider's official balance request; it is neither displayed nor persisted by TokenLens.
 
 ## Known limitations
 
 - Quota percentage is `--` until a rate-limit event is available in the local Codex logs.
-- CC Switch coverage depends on its local schema and proxy request logs; some versions may expose fewer external-model records.
+- CC Switch coverage depends on its local schema and proxy request logs; some versions may expose fewer external-model records. Unsupported or undocumented provider balance APIs show **Unavailable** rather than a fabricated percentage.
 - The ChatGPT lifecycle bridge currently matches `/Applications/ChatGPT.app`. If ChatGPT is moved, update the path check in `BridgeSources/TokenLensBridge.swift`.
 
 ## License
@@ -77,7 +74,7 @@ TokenLens 是一个原生 macOS 后台助手，用来观察本机 Codex / ChatGP
 
 - 顶部黑白动态岛：鼠标靠近屏幕顶部中央时缓慢展开，离开后立即收起。
 - 自动识别当前模型与提供商，并清晰标注 Codex 或 CC Switch 外部模型来源。
-- 显示 Token 消耗、共享额度/余额剩余百分比、上下文长度、当前长度、缓存命中率和近 7 日趋势。
+- 显示 Token 消耗、共享额度百分比，或外部模型的真实余额、上下文长度、当前长度、缓存命中率和近 7 日趋势。
 - 点击展开的小岛查看详细统计面板。
 
 ### 使用
@@ -88,4 +85,4 @@ chmod +x build.sh install.sh
 ./install.sh
 ```
 
-安装后重新打开 `/Applications/ChatGPT.app` 即可使用。统计数据只在本机读取 `~/.codex/sessions` 和可选的 `~/.cc-switch/cc-switch.db`，不需要 API Key，不上传日志，也不解析对话正文。
+安装后重新打开 `/Applications/ChatGPT.app` 即可使用。统计数据只在本机读取 `~/.codex/sessions` 和可选的 `~/.cc-switch/cc-switch.db`，不上传日志，也不解析对话正文。外部模型余额仅调用该供应商的官方余额接口，API Key 只在本机内存中使用，不会显示或写入 TokenLens。
