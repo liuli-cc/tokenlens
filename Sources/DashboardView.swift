@@ -136,7 +136,11 @@ struct DashboardView: View {
 
     private var heroMetrics: some View {
         HStack(spacing: 0) {
-            QuotaMetric(quota: store.snapshot.quota)
+            QuotaMetric(
+                quota: store.snapshot.quota,
+                provider: store.snapshot.currentProvider,
+                usesExternalModel: store.snapshot.usesExternalModel
+            )
                 .frame(maxWidth: .infinity)
 
             Hairline()
@@ -373,6 +377,8 @@ struct DashboardView: View {
 
 private struct QuotaMetric: View {
     let quota: RateLimitWindow?
+    let provider: String
+    let usesExternalModel: Bool
 
     var body: some View {
         HStack(spacing: 20) {
@@ -382,18 +388,18 @@ private struct QuotaMetric: View {
             )
 
             VStack(alignment: .leading, spacing: 7) {
-                Text("CHATGPT / CODEX")
+                Text(usesExternalModel ? provider.uppercased() : "CHATGPT / CODEX")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .tracking(0.6)
                     .foregroundStyle(Color.tokenMuted)
-                Text("共享额度剩余")
+                Text(usesExternalModel ? "共享余额剩余" : "共享额度剩余")
                     .font(.system(size: 14, weight: .medium))
                 if let quota {
                     Text(quotaDescription(quota))
                         .font(.system(size: 10))
                         .foregroundStyle(Color.tokenMuted)
                 } else {
-                    Text("等待最新额度事件")
+                    Text(usesExternalModel ? "等待最新余额事件" : "等待最新额度事件")
                         .font(.system(size: 10))
                         .foregroundStyle(Color.tokenMuted)
                 }
@@ -632,7 +638,7 @@ private struct MethodologyView: View {
                 .font(.system(size: 15, weight: .semibold))
 
             MethodRow(title: "Token 消耗", detail: "Codex token_count 事件中的实际累计值。")
-            MethodRow(title: "额度剩余", detail: "100% 减去 Codex 共享 agentic 窗口的 used_percent。")
+            MethodRow(title: "额度 / 余额剩余", detail: "官方模型显示 100% 减去 Codex 共享 agentic 窗口的 used_percent；外部模型显示 CC Switch 提供商余额口径。")
             MethodRow(title: "缓存命中率", detail: "本会话 cached_input_tokens 除以 input_tokens。")
             MethodRow(title: "当前长度", detail: "最近一次模型调用的 total_tokens，对比日志报告的动态上下文窗口。")
             MethodRow(title: "CC Switch 外部模型", detail: "提供商与模型目录来自本机 CC Switch，近 30 日用量优先使用其代理请求日志。")

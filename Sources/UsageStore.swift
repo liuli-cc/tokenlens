@@ -25,7 +25,8 @@ final class UsageStore: ObservableObject {
         Task {
             do {
                 var newSnapshot = try await scanner.scan()
-                if let title = contextTitleReader.currentTitle() {
+                if newSnapshot.currentConversationTitle == UsageSnapshot.empty.currentConversationTitle,
+                   let title = contextTitleReader.currentTitle() {
                     newSnapshot.currentConversationTitle = title
                 }
                 snapshot = newSnapshot

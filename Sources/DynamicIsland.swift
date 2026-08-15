@@ -417,7 +417,7 @@ private struct DynamicIslandView: View {
                 Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
-                Text("剩余额度")
+                Text(store.snapshot.quotaMetricTitle)
                     .font(.system(size: 7.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.46))
             }
@@ -460,7 +460,7 @@ private struct DynamicIslandView: View {
                     Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
                         .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white)
-                    Text(store.isScanning ? "正在扫描" : "共享额度剩余")
+                    Text(store.isScanning ? "正在扫描" : store.snapshot.sharedQuotaMetricTitle)
                         .font(.system(size: 8, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.48))
                 }
@@ -471,7 +471,7 @@ private struct DynamicIslandView: View {
             HStack(spacing: 0) {
                 IslandMetric(title: "今日 TOKEN", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
                 divider
-                IslandMetric(title: "剩余额度", value: store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                IslandMetric(title: store.snapshot.quotaMetricTitle, value: store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
                 divider
                 IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
                 divider

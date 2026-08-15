@@ -11,7 +11,7 @@ TokenLens is a native macOS background companion for Codex / ChatGPT usage. It s
 - **Token usage** — Input, cached input, output, and total tokens.
 - **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
 - **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
-- **Current conversation title** — Reads only the focused ChatGPT window title through macOS Accessibility. When it is unavailable, a non-empty Codex session summary is used as a fallback.
+- **Current conversation title** — Reads the active Codex thread title from local `~/.codex` state, with the focused window title and session summary as fallbacks.
 - **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. External models are labeled `CC Switch`.
 - **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
 
@@ -51,6 +51,7 @@ rm -f "$HOME/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist"
 TokenLens reads only local files:
 
 - `~/.codex/sessions/**/*.jsonl` for token, model, context, and rate-limit events;
+- `~/.codex/state_*.sqlite` and `~/.codex/session_index.jsonl` for the active conversation title;
 - `~/.cc-switch/cc-switch.db` when CC Switch is installed, queried through a read-only SQLite URI.
 
 It does not require an API key, upload logs, or load user/assistant message bodies into the dashboard. Metrics are kept in memory.
@@ -76,7 +77,7 @@ TokenLens 是一个原生 macOS 后台助手，用来观察本机 Codex / ChatGP
 
 - 顶部黑白动态岛：鼠标靠近屏幕顶部中央时缓慢展开，离开后立即收起。
 - 自动识别当前模型与提供商，并清晰标注 Codex 或 CC Switch 外部模型来源。
-- 显示 Token 消耗、共享额度剩余百分比、上下文长度、当前长度、缓存命中率和近 7 日趋势。
+- 显示 Token 消耗、共享额度/余额剩余百分比、上下文长度、当前长度、缓存命中率和近 7 日趋势。
 - 点击展开的小岛查看详细统计面板。
 
 ### 使用

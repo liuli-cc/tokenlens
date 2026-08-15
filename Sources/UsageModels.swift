@@ -104,6 +104,18 @@ struct UsageSnapshot: Equatable, Sendable {
     var todayUsage: TokenUsage {
         dailyUsage.last?.usage ?? .zero
     }
+
+    var usesExternalModel: Bool {
+        currentSource == "CC Switch"
+    }
+
+    var quotaMetricTitle: String {
+        usesExternalModel ? "余额" : "剩余额度"
+    }
+
+    var sharedQuotaMetricTitle: String {
+        usesExternalModel ? "共享余额剩余" : "共享额度剩余"
+    }
 }
 
 extension Int64 {

@@ -7,18 +7,27 @@ struct ChatGPTContextTitleReader {
     private let chatGPTBundleIdentifier = "com.openai.codex"
 
     func requestAccessIfNeeded() {
-        guard !AXIsProcessTrusted() else { return }
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        // macOS can report a stale trust value for an ad-hoc signed local
+        // build even while the app is enabled in System Settings. The read
+        // calls below return a safe error when access is unavailable, so do
+        // not block title detection or repeatedly show a permission prompt.
+        _ = AXIsProcessTrusted()
     }
 
     func currentTitle() -> String? {
-        guard AXIsProcessTrusted() else { return nil }
-
-        let applications = NSWorkspace.shared.runningApplications.filter(isChatGPT)
+        var applications: [NSRunningApplication] = []
+        if let frontmost = NSWorkspace.shared.frontmostApplication, isChatGPT(frontmost) {
+            applications.append(frontmost)
+        }
+        for application in NSWorkspace.shared.runningApplications where isChatGPT(application) {
+            if !applications.contains(where: { $0.processIdentifier == application.processIdentifier }) {
+                applications.append(application)
+            }
+        }
 
         for application in applications {
             let appElement = AXUIElementCreateApplication(application.processIdentifier)
+            AXUIElementSetMessagingTimeout(appElement, 0.75)
 
             if let sidebarTitle = sidebarConversationTitle(in: appElement) {
                 return sidebarTitle
@@ -34,6 +43,7 @@ struct ChatGPTContextTitleReader {
                 let windowValue,
                 CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { continue }
                 let window = unsafeDowncast(windowValue, to: AXUIElement.self)
+                AXUIElementSetMessagingTimeout(window, 0.75)
 
                 var titleValue: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(
@@ -77,6 +87,7 @@ struct ChatGPTContextTitleReader {
         CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return nil }
 
         let window = unsafeDowncast(windowValue, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(window, 0.75)
         guard let windowFrame = frame(of: window) else { return nil }
         var best: (title: String, distance: CGFloat)?
         collectChromeTitles(
@@ -103,6 +114,7 @@ struct ChatGPTContextTitleReader {
             CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { continue }
 
             let window = unsafeDowncast(windowValue, to: AXUIElement.self)
+            AXUIElementSetMessagingTimeout(window, 0.75)
             guard let windowFrame = frame(of: window) else { continue }
             let sidebarMaxX = windowFrame.minX + min(380, max(280, windowFrame.width * 0.36))
             var selectedBest: (title: String, y: CGFloat)?

@@ -7,11 +7,18 @@ actor CodexLogScanner {
     private let contextMarker = Data("\"turn_context\"".utf8)
     private let taskMarker = Data("\"task_started\"".utf8)
     private let sessionMarker = Data("\"session_meta\"".utf8)
-    private let ccSwitchScanner = CCSwitchScanner()
+    private let ccSwitchScanner: CCSwitchScanner
+    private let threadTitleStore: CodexThreadTitleStore
 
-    init(sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/sessions", isDirectory: true)) {
+    init(
+        sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true),
+        ccSwitchScanner: CCSwitchScanner = CCSwitchScanner(),
+        threadTitleStore: CodexThreadTitleStore = CodexThreadTitleStore()
+    ) {
         self.sessionsRoot = sessionsRoot
+        self.ccSwitchScanner = ccSwitchScanner
+        self.threadTitleStore = threadTitleStore
     }
 
     func scan(now: Date = Date(), historyDays: Int = 7) throws -> UsageSnapshot {
@@ -56,13 +63,18 @@ actor CodexLogScanner {
 
         cache = cache.filter { observed.contains($0.key) }
         let ccSwitch = ccSwitchScanner.scan()
+        let active = digests.max {
+            ($0.latestEventAt ?? .distantPast) < ($1.latestEventAt ?? .distantPast)
+        }
+        let threadTitle = threadTitleStore.currentTitle(for: active?.sessionID)
         return makeSnapshot(
             from: digests,
             ccSwitch: ccSwitch,
             now: now,
             historyStart: historyStart,
             historyDays: historyDays,
-            filesObserved: observed.count
+            filesObserved: observed.count,
+            threadTitle: threadTitle
         )
     }
 
@@ -130,6 +142,9 @@ actor CodexLogScanner {
         let eventType = payload["type"] as? String
 
         if topLevelType == "session_meta" {
+            if let sessionID = payload["session_id"] as? String, !sessionID.isEmpty {
+                digest.sessionID = sessionID
+            }
             if let provider = payload["model_provider"] as? String, !provider.isEmpty {
                 digest.currentProvider = provider
             }
@@ -215,7 +230,8 @@ actor CodexLogScanner {
         now: Date,
         historyStart: Date,
         historyDays: Int,
-        filesObserved: Int
+        filesObserved: Int,
+        threadTitle: String?
     ) -> UsageSnapshot {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
@@ -282,7 +298,7 @@ actor CodexLogScanner {
             currentModel: active?.currentModel.nonEmpty ?? "等待 Codex",
             currentProvider: activeProvider,
             currentSource: activeSource,
-            currentConversationTitle: active?.currentConversationTitle.nonEmpty ?? "当前会话（正在识别标题）",
+            currentConversationTitle: threadTitle ?? active?.currentConversationTitle.nonEmpty ?? "当前会话（正在识别标题）",
             currentSessionUsage: active?.latestTotal ?? .zero,
             lastCallUsage: active?.lastCall ?? .zero,
             contextWindow: active?.contextWindow ?? 0,
@@ -378,6 +394,7 @@ private struct CachedSession: Sendable {
 
 private struct SessionDigest: Sendable {
     let url: URL
+    var sessionID = ""
     var currentModel = ""
     var currentProvider = "openai"
     var currentConversationTitle = ""
@@ -394,21 +411,127 @@ private struct SessionDigest: Sendable {
     var unattributedTokens: Int64 = 0
 }
 
+struct CodexThreadTitleStore: Sendable {
+    private let codexRoot: URL
+
+    init(codexRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".codex", isDirectory: true)) {
+        self.codexRoot = codexRoot
+    }
+
+    func currentTitle(for sessionID: String?) -> String? {
+        if let title = sqliteCurrentTitle() {
+            return title
+        }
+        guard let sessionID else { return nil }
+        return indexTitle(for: sessionID)
+    }
+
+    private func sqliteCurrentTitle() -> String? {
+        guard let database = newestStateDatabase() else { return nil }
+        let sql = """
+        SELECT title
+        FROM threads
+        WHERE archived = 0
+          AND thread_source != 'subagent'
+          AND title <> ''
+        ORDER BY recency_at_ms DESC
+        LIMIT 1;
+        """
+        return query(sql, database: database).first?.first.flatMap(normalizedThreadTitle)
+    }
+
+    private func indexTitle(for sessionID: String) -> String? {
+        let indexURL = codexRoot.appendingPathComponent("session_index.jsonl")
+        guard let data = try? Data(contentsOf: indexURL),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  object["id"] as? String == sessionID,
+                  let rawTitle = object["thread_name"] as? String,
+                  let title = normalizedThreadTitle(rawTitle) else { continue }
+            return title
+        }
+        return nil
+    }
+
+    private func newestStateDatabase() -> URL? {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: codexRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        return files
+            .filter { $0.pathExtension == "sqlite" && $0.lastPathComponent.hasPrefix("state_") }
+            .sorted { lhs, rhs in
+                let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return lhsDate > rhsDate
+            }
+            .first
+    }
+
+    private func query(_ sql: String, database: URL) -> [[String]] {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [
+            "-separator", "\t",
+            "file:\(database.path)?mode=ro",
+            sql
+        ]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(decoding: data, as: UTF8.self)
+                .split(whereSeparator: \.isNewline)
+                .map { line in
+                    line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                }
+        } catch {
+            return []
+        }
+    }
+
+    private func normalizedThreadTitle(_ raw: String) -> String? {
+        let title = raw
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        let placeholders = ["none", "null", "n/a", "auto"]
+        guard !title.isEmpty,
+              title.count <= 300,
+              !placeholders.contains(title.lowercased()),
+              !title.lowercased().hasPrefix("the following is the codex agent history") else { return nil }
+        return title
+    }
+}
+
 private struct ModelIdentity: Hashable, Sendable {
     let provider: String
     let model: String
     let source: String
 }
 
-private struct CCSwitchSnapshot: Sendable {
+struct CCSwitchSnapshot: Sendable {
     var activeProvider: String?
     var configuredModels: [ConfiguredModel] = []
     var usage: [ModelUsage] = []
 }
 
-private struct CCSwitchScanner: Sendable {
-    private let databaseURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cc-switch/cc-switch.db")
+struct CCSwitchScanner: Sendable {
+    private let databaseURL: URL
+
+    init(databaseURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cc-switch/cc-switch.db")) {
+        self.databaseURL = databaseURL
+    }
 
     func scan() -> CCSwitchSnapshot {
         guard FileManager.default.fileExists(atPath: databaseURL.path),
