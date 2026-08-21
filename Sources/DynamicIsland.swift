@@ -320,6 +320,7 @@ private struct DynamicIslandView: View {
     @EnvironmentObject private var store: UsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: IslandViewModel
+    @State private var isQueueIslandRunning = false
 
     let onHover: (Bool) -> Void
     let onTap: () -> Void
@@ -331,11 +332,13 @@ private struct DynamicIslandView: View {
             islandShape
                 .fill(Color.black)
                 .overlay {
-                    islandShape
-                        .strokeBorder(
-                            Color.white.opacity(viewModel.isExpanded ? 0.12 : 0.08),
-                            lineWidth: 0.7
-                        )
+                    if !isAttachedToQueueIsland {
+                        islandShape
+                            .strokeBorder(
+                                Color.white.opacity(viewModel.isExpanded ? 0.12 : 0.08),
+                                lineWidth: 0.7
+                            )
+                    }
                 }
                 .padding(.trailing, viewModel.isExpanded ? 0 : compactRightWingShift)
 
@@ -366,7 +369,11 @@ private struct DynamicIslandView: View {
                     .onTapGesture(perform: onTap)
             }
         }
-        .onReceive(refreshTimer) { _ in store.refresh() }
+        .onAppear(perform: refreshQueueIslandAttachment)
+        .onReceive(refreshTimer) { _ in
+            store.refresh()
+            refreshQueueIslandAttachment()
+        }
         .animation(
             reduceMotion ? nil : .timingCurve(0.18, 0.88, 0.26, 1, duration: 0.58),
             value: viewModel.isExpanded
@@ -382,11 +389,21 @@ private struct DynamicIslandView: View {
     private var islandShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0,
-            bottomLeadingRadius: viewModel.isExpanded ? 30 : 16.75,
+            bottomLeadingRadius: viewModel.isExpanded ? 30 : (isAttachedToQueueIsland ? 0 : 16.75),
             bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.75,
             topTrailingRadius: 0,
             style: .continuous
         )
+    }
+
+    private var isAttachedToQueueIsland: Bool {
+        !viewModel.isExpanded && isQueueIslandRunning
+    }
+
+    private func refreshQueueIslandAttachment() {
+        isQueueIslandRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "com.liuli.cloud-zzz-queue-monitor"
+        }
     }
 
     private var compactContent: some View {
