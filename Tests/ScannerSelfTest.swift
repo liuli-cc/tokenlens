@@ -33,13 +33,16 @@ struct ScannerSelfTest {
         let log = dayFolder.appendingPathComponent("rollout-test.jsonl")
         let lines = [
             #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"session_meta","payload":{"model_provider":"third-party-provider"}}"#,
-            #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"turn_context","payload":{"model":"future-codex-model-x"}}"#,
+            #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"turn_context","payload":{"model":"future-codex-model-x","summary":"Dashboard context title"}}"#,
             #"{"timestamp":"2026-08-14T02:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":80,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":100},"last_token_usage":{"input_tokens":80,"cached_input_tokens":40,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":100},"model_context_window":400000},"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":10080,"resets_at":1787241518},"plan_type":"plus"}}}"#,
             #"{"timestamp":"2026-08-14T02:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":100,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":250},"last_token_usage":{"input_tokens":120,"cached_input_tokens":60,"output_tokens":30,"reasoning_output_tokens":5,"total_tokens":150},"model_context_window":400000},"rate_limits":{"primary":{"used_percent":37.5,"window_minutes":10080,"resets_at":1787241518},"plan_type":"plus"}}}"#
         ].joined(separator: "\n") + "\n"
         try Data(lines.utf8).write(to: log)
 
-        let scanner = CodexLogScanner(sessionsRoot: root)
+        let scanner = CodexLogScanner(
+            sessionsRoot: root,
+            ccSwitchScanner: CCSwitchScanner(databaseURL: root.appendingPathComponent("missing.db"))
+        )
         let now = try Date.ISO8601FormatStyle().parse("2026-08-14T12:00:00Z")
         let snapshot = try await scanner.scan(now: now)
 
@@ -65,7 +68,10 @@ struct ScannerSelfTest {
         let first = #"{"timestamp":"2026-08-14T02:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":90,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":100},"last_token_usage":{"input_tokens":90,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":100},"model_context_window":200000},"rate_limits":null}}"# + "\n"
         try Data(first.utf8).write(to: log)
 
-        let scanner = CodexLogScanner(sessionsRoot: root)
+        let scanner = CodexLogScanner(
+            sessionsRoot: root,
+            ccSwitchScanner: CCSwitchScanner(databaseURL: root.appendingPathComponent("missing.db"))
+        )
         let now = try Date.ISO8601FormatStyle().parse("2026-08-14T12:00:00Z")
         _ = try await scanner.scan(now: now)
 
@@ -79,4 +85,5 @@ struct ScannerSelfTest {
         try expect(refreshed.currentSessionUsage.totalTokens == 200, "incremental session total is incorrect")
         try expect(refreshed.dailyUsage.last?.usage.totalTokens == 200, "incremental delta was double-counted")
     }
+
 }

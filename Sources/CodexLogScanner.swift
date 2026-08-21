@@ -7,14 +7,18 @@ actor CodexLogScanner {
     private let contextMarker = Data("\"turn_context\"".utf8)
     private let taskMarker = Data("\"task_started\"".utf8)
     private let sessionMarker = Data("\"session_meta\"".utf8)
-    private let ccSwitchScanner = CCSwitchScanner()
+    private let ccSwitchScanner: CCSwitchScanner
 
-    init(sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/sessions", isDirectory: true)) {
+    init(
+        sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true),
+        ccSwitchScanner: CCSwitchScanner = CCSwitchScanner()
+    ) {
         self.sessionsRoot = sessionsRoot
+        self.ccSwitchScanner = ccSwitchScanner
     }
 
-    func scan(now: Date = Date(), historyDays: Int = 7) throws -> UsageSnapshot {
+    func scan(now: Date = Date(), historyDays: Int = 7) async throws -> UsageSnapshot {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: sessionsRoot.path) else {
             throw ScannerError.sessionsDirectoryMissing(sessionsRoot.path)
@@ -31,18 +35,10 @@ actor CodexLogScanner {
             .fileSizeKey
         ]
 
-        guard let enumerator = fileManager.enumerator(
-            at: sessionsRoot,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles]
-        ) else {
-            throw ScannerError.cannotEnumerate(sessionsRoot.path)
-        }
-
         var observed = Set<URL>()
         var digests: [SessionDigest] = []
 
-        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+        for url in try sessionFiles(resourceKeys: resourceKeys) {
             let values = try url.resourceValues(forKeys: resourceKeys)
             guard values.isRegularFile == true,
                   let modifiedAt = values.contentModificationDate,
@@ -55,7 +51,7 @@ actor CodexLogScanner {
         }
 
         cache = cache.filter { observed.contains($0.key) }
-        let ccSwitch = ccSwitchScanner.scan()
+        let ccSwitch = await ccSwitchScanner.scan()
         return makeSnapshot(
             from: digests,
             ccSwitch: ccSwitch,
@@ -64,6 +60,18 @@ actor CodexLogScanner {
             historyDays: historyDays,
             filesObserved: observed.count
         )
+    }
+
+    private func sessionFiles(resourceKeys: Set<URLResourceKey>) throws -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: sessionsRoot,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw ScannerError.cannotEnumerate(sessionsRoot.path)
+        }
+        return enumerator.allObjects.compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "jsonl" }
     }
 
     private func updateCache(for url: URL, size: UInt64, modifiedAt: Date) throws -> CachedSession {
@@ -282,6 +290,7 @@ actor CodexLogScanner {
             lastCallUsage: active?.lastCall ?? .zero,
             contextWindow: active?.contextWindow ?? 0,
             quota: quotaDigest?.quota,
+            providerBalance: activeCCProvider == nil ? nil : ccSwitch.providerBalance,
             dailyUsage: days,
             modelUsage: models,
             configuredModels: ccSwitch.configuredModels,
@@ -384,17 +393,23 @@ private struct ModelIdentity: Hashable, Sendable {
     let source: String
 }
 
-private struct CCSwitchSnapshot: Sendable {
+struct CCSwitchSnapshot: Sendable {
     var activeProvider: String?
+    var providerBalance: ProviderBalance?
     var configuredModels: [ConfiguredModel] = []
     var usage: [ModelUsage] = []
 }
 
-private struct CCSwitchScanner: Sendable {
-    private let databaseURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".cc-switch/cc-switch.db")
+struct CCSwitchScanner: Sendable {
+    private let databaseURL: URL
+    private let balanceReader = ProviderBalanceReader()
 
-    func scan() -> CCSwitchSnapshot {
+    init(databaseURL: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cc-switch/cc-switch.db")) {
+        self.databaseURL = databaseURL
+    }
+
+    func scan() async -> CCSwitchSnapshot {
         guard FileManager.default.fileExists(atPath: databaseURL.path),
               FileManager.default.isExecutableFile(atPath: "/usr/bin/sqlite3") else {
             return CCSwitchSnapshot()
@@ -412,8 +427,13 @@ private struct CCSwitchScanner: Sendable {
         ORDER BY p.name, m.key;
         """
         let providerSQL = """
-        SELECT name FROM providers
-        WHERE app_type='codex' AND is_current=1
+        SELECT p.id,
+               p.name,
+               COALESCE(e.url, ''),
+               COALESCE(json_extract(p.settings_config, '$.auth.OPENAI_API_KEY'), '')
+        FROM providers p
+        LEFT JOIN provider_endpoints e ON e.provider_id=p.id AND e.app_type=p.app_type
+        WHERE p.app_type='codex' AND p.is_current=1
         LIMIT 1;
         """
         let usageSQL = """
@@ -469,10 +489,13 @@ private struct CCSwitchScanner: Sendable {
                 source: "CC Switch"
             )
         }
-        let activeProvider = query(providerSQL).first?.first
+        let activeCredentials = query(providerSQL).first.flatMap(ProviderCredentials.init(columns:))
+        let activeProvider = activeCredentials?.name
+        let providerBalance = await balanceReader.balance(for: activeCredentials)
 
         return CCSwitchSnapshot(
             activeProvider: activeProvider,
+            providerBalance: providerBalance,
             configuredModels: configured,
             usage: usage
         )
@@ -504,6 +527,148 @@ private struct CCSwitchScanner: Sendable {
         } catch {
             return []
         }
+    }
+}
+
+private struct ProviderCredentials: Sendable {
+    let id: String
+    let name: String
+    let baseURL: String
+    let apiKey: String
+
+    init?(columns: [String]) {
+        guard columns.count >= 4,
+              !columns[0].isEmpty,
+              !columns[1].isEmpty,
+              !columns[3].isEmpty else { return nil }
+        id = columns[0]
+        name = columns[1]
+        baseURL = columns[2]
+        apiKey = columns[3]
+    }
+
+    var isExternal: Bool {
+        let normalized = name.lowercased()
+        return normalized != "default" && !normalized.contains("official")
+    }
+}
+
+private actor ProviderBalanceReader {
+    private struct CachedBalance: Sendable {
+        let value: ProviderBalance?
+        let fetchedAt: Date
+    }
+
+    private var cache: [String: CachedBalance] = [:]
+
+    func balance(for credentials: ProviderCredentials?) async -> ProviderBalance? {
+        guard let credentials, credentials.isExternal else { return nil }
+        if let cached = cache[credentials.id],
+           Date().timeIntervalSince(cached.fetchedAt) < 45 {
+            return cached.value
+        }
+
+        let result = await fetchOfficialBalance(credentials)
+        cache[credentials.id] = CachedBalance(value: result, fetchedAt: Date())
+        return result
+    }
+
+    private func fetchOfficialBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
+        let identity = "\(credentials.name) \(credentials.baseURL)".lowercased()
+        if identity.contains("deepseek") {
+            return await requestDeepSeekBalance(credentials)
+        }
+        if identity.contains("kimi") || identity.contains("moonshot") {
+            return await requestKimiBalance(credentials)
+        }
+        if identity.contains("glm") || identity.contains("zhipu") || identity.contains("bigmodel") {
+            return await requestGLMBalance(credentials)
+        }
+        return nil
+    }
+
+    private func requestDeepSeekBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
+        guard let object = await requestJSON(path: "/user/balance", credentials: credentials),
+              object["is_available"] as? Bool == true,
+              let infos = object["balance_infos"] as? [[String: Any]] else { return nil }
+
+        let amounts = infos.compactMap { info -> ProviderBalance.Amount? in
+            guard let currency = info["currency"] as? String,
+                  let value = numeric(info["total_balance"]) else { return nil }
+            return ProviderBalance.Amount(currency: currency, value: value)
+        }
+        return amounts.isEmpty ? nil : ProviderBalance(amounts: amounts, fetchedAt: Date())
+    }
+
+    private func requestKimiBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
+        guard let object = await requestJSON(path: "/users/me/balance", credentials: credentials),
+              let data = object["data"] as? [String: Any],
+              let value = numeric(data["available_balance"]) else { return nil }
+        return ProviderBalance(
+            amounts: [.init(currency: inferredCurrency(for: credentials), value: value)],
+            fetchedAt: Date()
+        )
+    }
+
+    private func requestGLMBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
+        // GLM has no documented balance endpoint. Only surface a value if a
+        // compatible deployment explicitly returns one from its credit route.
+        guard let object = await requestJSON(path: "/user/credit", credentials: credentials) else { return nil }
+        let data = (object["data"] as? [String: Any]) ?? object
+        let candidates = ["available_balance", "balance", "credit", "total_balance"]
+        guard let value = candidates.compactMap({ numeric(data[$0]) }).first else { return nil }
+        return ProviderBalance(
+            amounts: [.init(currency: inferredCurrency(for: credentials), value: value)],
+            fetchedAt: Date()
+        )
+    }
+
+    private func requestJSON(path: String, credentials: ProviderCredentials) async -> [String: Any]? {
+        guard let url = balanceURL(baseURL: credentials.baseURL, path: path) else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 5
+        request.setValue("Bearer \(credentials.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else { return nil }
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        } catch {
+            return nil
+        }
+    }
+
+    private func balanceURL(baseURL: String, path: String) -> URL? {
+        guard var components = URLComponents(string: baseURL),
+              let host = components.host,
+              !host.isEmpty else { return nil }
+        let cleanPath = components.path.hasSuffix("/")
+            ? String(components.path.dropLast())
+            : components.path
+        let requiredPath: String
+        if path == "/user/balance" {
+            requiredPath = cleanPath.hasSuffix("/v1")
+                ? String(cleanPath.dropLast(3)) + path
+                : cleanPath + path
+        } else {
+            requiredPath = cleanPath + path
+        }
+        components.path = requiredPath.replacingOccurrences(of: "//", with: "/")
+        return components.url
+    }
+
+    private func inferredCurrency(for credentials: ProviderCredentials) -> String {
+        credentials.baseURL.lowercased().contains("moonshot.cn") ? "CNY" : "CNY"
+    }
+
+    private func numeric(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
     }
 }
 

@@ -53,8 +53,8 @@ final class IslandViewModel: ObservableObject {
 
 @MainActor
 final class IslandPanelController {
-    private let compactDesignSize = NSSize(width: 430, height: 33)
-    private let compactSize = NSSize(width: 358, height: 33)
+    private let compactDesignSize = NSSize(width: 430, height: 33.5)
+    private let compactSize = NSSize(width: 358, height: 33.5)
     private let expandedSize = NSSize(width: 548, height: 148)
     private let topInset: CGFloat = 0
 
@@ -320,6 +320,7 @@ private struct DynamicIslandView: View {
     @EnvironmentObject private var store: UsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: IslandViewModel
+    @State private var isQueueIslandRunning = false
 
     let onHover: (Bool) -> Void
     let onTap: () -> Void
@@ -331,11 +332,13 @@ private struct DynamicIslandView: View {
             islandShape
                 .fill(Color.black)
                 .overlay {
-                    islandShape
-                        .strokeBorder(
-                            Color.white.opacity(viewModel.isExpanded ? 0.12 : 0.08),
-                            lineWidth: 0.7
-                        )
+                    if !isAttachedToQueueIsland {
+                        islandShape
+                            .strokeBorder(
+                                Color.white.opacity(viewModel.isExpanded ? 0.12 : 0.08),
+                                lineWidth: 0.7
+                            )
+                    }
                 }
                 .padding(.trailing, viewModel.isExpanded ? 0 : compactRightWingShift)
 
@@ -366,7 +369,11 @@ private struct DynamicIslandView: View {
                     .onTapGesture(perform: onTap)
             }
         }
-        .onReceive(refreshTimer) { _ in store.refresh() }
+        .onAppear(perform: refreshQueueIslandAttachment)
+        .onReceive(refreshTimer) { _ in
+            store.refresh()
+            refreshQueueIslandAttachment()
+        }
         .animation(
             reduceMotion ? nil : .timingCurve(0.18, 0.88, 0.26, 1, duration: 0.58),
             value: viewModel.isExpanded
@@ -382,11 +389,21 @@ private struct DynamicIslandView: View {
     private var islandShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: 0,
-            bottomLeadingRadius: viewModel.isExpanded ? 30 : 16.5,
-            bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.5,
+            bottomLeadingRadius: viewModel.isExpanded ? 30 : (isAttachedToQueueIsland ? 0 : 16.75),
+            bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.75,
             topTrailingRadius: 0,
             style: .continuous
         )
+    }
+
+    private var isAttachedToQueueIsland: Bool {
+        !viewModel.isExpanded && isQueueIslandRunning
+    }
+
+    private func refreshQueueIslandAttachment() {
+        isQueueIslandRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "com.liuli.cloud-zzz-queue-monitor"
+        }
     }
 
     private var compactContent: some View {
@@ -401,7 +418,7 @@ private struct DynamicIslandView: View {
                         .font(.system(size: 10.5, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(store.snapshot.currentProvider)
+                    Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
                         .font(.system(size: 7.5, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.50))
                         .lineLimit(1)
@@ -414,10 +431,10 @@ private struct DynamicIslandView: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                Text(compactMetricValue)
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(.white)
-                Text("剩余额度")
+                Text(store.snapshot.quotaMetricTitle)
                     .font(.system(size: 7.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.white.opacity(0.46))
             }
@@ -445,7 +462,7 @@ private struct DynamicIslandView: View {
                             .font(.system(size: 11.5, weight: .bold, design: .rounded))
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        Text(store.snapshot.currentProvider)
+                        Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
                             .font(.system(size: 8, weight: .medium, design: .rounded))
                             .foregroundStyle(.white.opacity(0.48))
                     }
@@ -457,10 +474,12 @@ private struct DynamicIslandView: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                    Text(store.snapshot.usesExternalModel
+                        ? store.snapshot.balanceDisplayValue
+                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
                         .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white)
-                    Text(store.isScanning ? "正在扫描" : "共享额度剩余")
+                    Text(store.isScanning ? "正在扫描" : store.snapshot.sharedQuotaMetricTitle)
                         .font(.system(size: 8, weight: .medium, design: .rounded))
                         .foregroundStyle(.white.opacity(0.48))
                 }
@@ -471,7 +490,12 @@ private struct DynamicIslandView: View {
             HStack(spacing: 0) {
                 IslandMetric(title: "今日 TOKEN", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
                 divider
-                IslandMetric(title: "剩余额度", value: store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
+                IslandMetric(
+                    title: store.snapshot.quotaMetricTitle,
+                    value: store.snapshot.usesExternalModel
+                        ? store.snapshot.balanceDisplayValue
+                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
+                )
                 divider
                 IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
                 divider
@@ -502,6 +526,13 @@ private struct DynamicIslandView: View {
     private var compactModelName: String {
         let name = store.snapshot.currentModel
         return name.count > 15 ? String(name.prefix(14)) + "…" : name
+    }
+
+    private var compactMetricValue: String {
+        let value = store.snapshot.usesExternalModel
+            ? store.snapshot.balanceDisplayValue
+            : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
+        return value.count > 10 ? String(value.prefix(9)) + "…" : value
     }
 }
 

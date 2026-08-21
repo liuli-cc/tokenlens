@@ -19,8 +19,7 @@ final class UsageStore: ObservableObject {
 
         Task {
             do {
-                let newSnapshot = try await scanner.scan()
-                snapshot = newSnapshot
+                snapshot = try await scanner.scan()
                 lastUpdated = Date()
                 errorMessage = nil
             } catch {
