@@ -15,11 +15,55 @@ struct ScannerSelfTest {
     static func main() async throws {
         try await testDynamicModelAndMetrics()
         try await testIncrementalRefresh()
+        try testRechargeURLResolution()
         print("TokenLens scanner self-test passed")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw SelfTestFailure.assertion(message) }
+    }
+
+    private static func testRechargeURLResolution() throws {
+        try expect(
+            ProviderRechargeURLResolver.url(
+                providerName: "DeepSeek",
+                baseURL: "https://api.deepseek.com",
+                websiteURL: "https://platform.deepseek.com"
+            ) == URL(string: "https://platform.deepseek.com/top_up"),
+            "DeepSeek recharge URL was not resolved"
+        )
+        try expect(
+            ProviderRechargeURLResolver.url(
+                providerName: "Kimi",
+                baseURL: "https://api.moonshot.cn/v1",
+                websiteURL: "https://platform.kimi.com?aff=cc-switch"
+            ) == URL(string: "https://platform.kimi.com/console/pay"),
+            "Kimi recharge URL was not resolved"
+        )
+        try expect(
+            ProviderRechargeURLResolver.url(
+                providerName: "GLM",
+                baseURL: "https://open.bigmodel.cn/api/paas/v4",
+                websiteURL: "https://open.bigmodel.cn"
+            ) == URL(string: "https://open.bigmodel.cn/console/usercenter/expense"),
+            "GLM recharge URL was not resolved"
+        )
+        try expect(
+            ProviderRechargeURLResolver.url(
+                providerName: "Custom Relay",
+                baseURL: "https://api.example.com/v1",
+                websiteURL: "https://example.com/billing"
+            ) == URL(string: "https://example.com/billing"),
+            "Fallback recharge URL was not used"
+        )
+        try expect(
+            ProviderRechargeURLResolver.url(
+                providerName: "Custom Relay",
+                baseURL: "https://api.example.com/v1",
+                websiteURL: ""
+            ) == nil,
+            "Unknown provider without website should not resolve a recharge URL"
+        )
     }
 
     private static func testDynamicModelAndMetrics() async throws {

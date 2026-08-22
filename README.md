@@ -12,6 +12,7 @@ TokenLens is a native macOS background companion for Codex / ChatGPT usage. It s
 - **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
 - **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
 - **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. For active DeepSeek and Kimi providers, it displays the real balance returned by each provider's official API; a provider without a readable official balance endpoint is clearly labeled unavailable.
+- **Clickable balance** — While a CC Switch external provider is active, clicking the balance on the Dynamic Island opens that provider's API recharge page in the browser.
 - **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
 
 ## Requirements
@@ -75,6 +76,7 @@ TokenLens 是一个原生 macOS 后台助手，用来观察本机 Codex / ChatGP
 - 顶部黑白动态岛：鼠标靠近屏幕顶部中央时缓慢展开，离开后立即收起。
 - 自动识别当前模型与提供商，并清晰标注 Codex 或 CC Switch 外部模型来源。
 - 显示 Token 消耗、共享额度百分比，或外部模型的真实余额、上下文长度、当前长度、缓存命中率和近 7 日趋势。
+- 使用 CC Switch 外部模型时，点击灵动岛上的余额会打开对应提供商的 API 充值页面。
 - 点击展开的小岛查看详细统计面板。
 
 ### 使用

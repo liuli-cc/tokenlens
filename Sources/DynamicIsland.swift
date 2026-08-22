@@ -369,6 +369,16 @@ private struct DynamicIslandView: View {
                     .onTapGesture(perform: onTap)
             }
         }
+        .overlay(alignment: viewModel.isExpanded ? .topTrailing : .trailing) {
+            Color.clear
+                .frame(width: 150, height: viewModel.isExpanded ? 31 : 30)
+                .contentShape(Rectangle())
+                .onHover(perform: onHover)
+                .onTapGesture(perform: handleBalanceTap)
+                .help(rechargeHelpText)
+                .padding(.trailing, viewModel.isExpanded ? 17 : 14 + compactRightWingShift)
+                .padding(.top, viewModel.isExpanded ? 5 : 0)
+        }
         .onAppear(perform: refreshQueueIslandAttachment)
         .onReceive(refreshTimer) { _ in
             store.refresh()
@@ -533,6 +543,18 @@ private struct DynamicIslandView: View {
             ? store.snapshot.balanceDisplayValue
             : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
         return value.count > 10 ? String(value.prefix(9)) + "…" : value
+    }
+
+    private var rechargeHelpText: String {
+        store.snapshot.providerRechargeURL == nil ? "余额" : "打开 API 充值页面"
+    }
+
+    private func handleBalanceTap() {
+        if let url = store.snapshot.providerRechargeURL {
+            NSWorkspace.shared.open(url)
+        } else {
+            onTap()
+        }
     }
 }
 

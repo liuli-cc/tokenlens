@@ -100,6 +100,7 @@ struct UsageSnapshot: Equatable, Sendable {
     var contextWindow: Int64 = 0
     var quota: RateLimitWindow?
     var providerBalance: ProviderBalance?
+    var providerRechargeURL: URL?
     var dailyUsage: [DayUsage] = []
     var modelUsage: [ModelUsage] = []
     var configuredModels: [ConfiguredModel] = []

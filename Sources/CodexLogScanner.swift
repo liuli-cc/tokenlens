@@ -291,6 +291,7 @@ actor CodexLogScanner {
             contextWindow: active?.contextWindow ?? 0,
             quota: quotaDigest?.quota,
             providerBalance: activeCCProvider == nil ? nil : ccSwitch.providerBalance,
+            providerRechargeURL: activeCCProvider == nil ? nil : ccSwitch.providerRechargeURL,
             dailyUsage: days,
             modelUsage: models,
             configuredModels: ccSwitch.configuredModels,
@@ -396,6 +397,7 @@ private struct ModelIdentity: Hashable, Sendable {
 struct CCSwitchSnapshot: Sendable {
     var activeProvider: String?
     var providerBalance: ProviderBalance?
+    var providerRechargeURL: URL?
     var configuredModels: [ConfiguredModel] = []
     var usage: [ModelUsage] = []
 }
@@ -430,7 +432,8 @@ struct CCSwitchScanner: Sendable {
         SELECT p.id,
                p.name,
                COALESCE(e.url, ''),
-               COALESCE(json_extract(p.settings_config, '$.auth.OPENAI_API_KEY'), '')
+               COALESCE(json_extract(p.settings_config, '$.auth.OPENAI_API_KEY'), ''),
+               COALESCE(p.website_url, '')
         FROM providers p
         LEFT JOIN provider_endpoints e ON e.provider_id=p.id AND e.app_type=p.app_type
         WHERE p.app_type='codex' AND p.is_current=1
@@ -496,6 +499,7 @@ struct CCSwitchScanner: Sendable {
         return CCSwitchSnapshot(
             activeProvider: activeProvider,
             providerBalance: providerBalance,
+            providerRechargeURL: activeCredentials?.rechargeURL,
             configuredModels: configured,
             usage: usage
         )
@@ -535,9 +539,10 @@ private struct ProviderCredentials: Sendable {
     let name: String
     let baseURL: String
     let apiKey: String
+    let websiteURL: String
 
     init?(columns: [String]) {
-        guard columns.count >= 4,
+        guard columns.count >= 5,
               !columns[0].isEmpty,
               !columns[1].isEmpty,
               !columns[3].isEmpty else { return nil }
@@ -545,11 +550,54 @@ private struct ProviderCredentials: Sendable {
         name = columns[1]
         baseURL = columns[2]
         apiKey = columns[3]
+        websiteURL = columns[4]
     }
 
     var isExternal: Bool {
         let normalized = name.lowercased()
         return normalized != "default" && !normalized.contains("official")
+    }
+
+    var rechargeURL: URL? {
+        ProviderRechargeURLResolver.url(
+            providerName: name,
+            baseURL: baseURL,
+            websiteURL: websiteURL
+        )
+    }
+}
+
+enum ProviderRechargeURLResolver {
+    static func url(providerName: String, baseURL: String, websiteURL: String) -> URL? {
+        let identity = "\(providerName) \(baseURL)".lowercased()
+
+        if identity.contains("deepseek") {
+            return URL(string: "https://platform.deepseek.com/top_up")
+        }
+        if identity.contains("kimi") || identity.contains("moonshot") {
+            return URL(string: "https://platform.kimi.com/console/pay")
+        }
+        if identity.contains("glm") || identity.contains("zhipu") || identity.contains("bigmodel") {
+            return URL(string: "https://open.bigmodel.cn/console/usercenter/expense")
+        }
+        if identity.contains("siliconflow") {
+            let host = identity.contains("siliconflow.com") && !identity.contains("siliconflow.cn")
+                ? "https://cloud.siliconflow.com/account/billing"
+                : "https://cloud.siliconflow.cn/account/billing"
+            return URL(string: host)
+        }
+        if identity.contains("openrouter") {
+            return URL(string: "https://openrouter.ai/settings/credits")
+        }
+        if identity.contains("novita") {
+            return URL(string: "https://novita.ai/settings/billing")
+        }
+        if identity.contains("stepfun") {
+            return URL(string: "https://platform.stepfun.com/")
+        }
+
+        guard !websiteURL.isEmpty else { return nil }
+        return URL(string: websiteURL)
     }
 }
 
