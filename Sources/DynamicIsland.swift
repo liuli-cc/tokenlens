@@ -60,6 +60,7 @@ final class IslandPanelController {
 
     private let store: UsageStore
     private let onOpenDetails: () -> Void
+    private let onOpenChatGPT: () -> Void
     private let viewModel = IslandViewModel()
     private let panel: TopPinnedPanel
     private var hostContainer: IslandHostContainer!
@@ -69,9 +70,14 @@ final class IslandPanelController {
     private var localMonitor: Any?
     private var animationGeneration = 0
 
-    init(store: UsageStore, onOpenDetails: @escaping () -> Void) {
+    init(
+        store: UsageStore,
+        onOpenDetails: @escaping () -> Void,
+        onOpenChatGPT: @escaping () -> Void
+    ) {
         self.store = store
         self.onOpenDetails = onOpenDetails
+        self.onOpenChatGPT = onOpenChatGPT
         self.panel = TopPinnedPanel(
             contentRect: NSRect(origin: .zero, size: compactSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -100,7 +106,8 @@ final class IslandPanelController {
             },
             onTap: { [weak self] in
                 self?.handleTap()
-            }
+            },
+            onOpenChatGPT: onOpenChatGPT
         )
         .environmentObject(store)
 
@@ -134,22 +141,44 @@ final class IslandPanelController {
     }
 
     private func installPointerMonitors() {
-        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
             let point = NSEvent.mouseLocation
             Task { @MainActor in
-                self?.handlePointer(at: point)
+                if event.type == .leftMouseDown {
+                    self?.handleTopCenterClick(at: point)
+                } else {
+                    self?.handlePointer(at: point)
+                }
             }
         }
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             let point = NSEvent.mouseLocation
+            if event.type == .leftMouseDown {
+                var didHandleClick = false
+                MainActor.assumeIsolated {
+                    didHandleClick = self?.handleTopCenterClick(at: point) ?? false
+                }
+                return didHandleClick ? nil : event
+            }
+
             Task { @MainActor in
                 self?.handlePointer(at: point)
             }
             return event
         }
+    }
+
+    @discardableResult
+    private func handleTopCenterClick(at point: NSPoint) -> Bool {
+        guard viewModel.isExpanded,
+              let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
+              chatGPTTriggerFrame(on: screen).contains(point) else { return false }
+
+        onOpenChatGPT()
+        return true
     }
 
     private func handlePointer(at point: NSPoint) {
@@ -196,6 +225,15 @@ final class IslandPanelController {
             y: screen.frame.maxY - 24,
             width: compactFrame.width + 24,
             height: 24
+        )
+    }
+
+    private func chatGPTTriggerFrame(on screen: NSScreen) -> NSRect {
+        NSRect(
+            x: screen.frame.midX - viewModel.notchGapWidth / 2,
+            y: screen.frame.maxY - 34,
+            width: viewModel.notchGapWidth,
+            height: 34
         )
     }
 
@@ -324,6 +362,7 @@ private struct DynamicIslandView: View {
 
     let onHover: (Bool) -> Void
     let onTap: () -> Void
+    let onOpenChatGPT: () -> Void
 
     private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
@@ -367,6 +406,19 @@ private struct DynamicIslandView: View {
                     .contentShape(Rectangle())
                     .onHover(perform: onHover)
                     .onTapGesture(perform: onTap)
+            }
+        }
+        .overlay(alignment: .top) {
+            if viewModel.isExpanded {
+                Button(action: onOpenChatGPT) {
+                    Color.clear
+                        .frame(width: viewModel.notchGapWidth, height: 34)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover(perform: onHover)
+                .help("打开 ChatGPT")
+                .accessibilityLabel("打开 ChatGPT")
             }
         }
         .overlay(alignment: viewModel.isExpanded ? .topTrailing : .trailing) {

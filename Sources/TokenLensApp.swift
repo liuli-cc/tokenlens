@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 @MainActor
@@ -24,9 +25,15 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        let controller = IslandPanelController(store: store) { [weak self] in
-            self?.showDashboard()
-        }
+        let controller = IslandPanelController(
+            store: store,
+            onOpenDetails: { [weak self] in
+                self?.showDashboard()
+            },
+            onOpenChatGPT: {
+                Self.openChatGPT()
+            }
+        )
         islandController = controller
         controller.start()
         store.refresh()
@@ -51,6 +58,88 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
         guard application.bundleIdentifier == chatGPTBundleIdentifier else { return false }
         return application.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
             || application.localizedName == "ChatGPT"
+    }
+
+    static func openChatGPT() {
+        let runningApplication = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.openai.codex"
+                && ($0.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
+                    || $0.localizedName == "ChatGPT")
+        })
+
+        if let runningApplication {
+            runningApplication.unhide()
+            _ = restoreOrRaiseChatGPTWindows(for: runningApplication)
+            runningApplication.activate(options: [.activateAllWindows])
+        }
+
+        let applicationURL = URL(fileURLWithPath: "/Applications/ChatGPT.app", isDirectory: true)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.allowsRunningApplicationSubstitution = true
+        if let runningApplication {
+            let target = NSAppleEventDescriptor(processIdentifier: runningApplication.processIdentifier)
+            let reopenEvent = NSAppleEventDescriptor(
+                eventClass: AEEventClass(kCoreEventClass),
+                eventID: AEEventID(kAEReopenApplication),
+                targetDescriptor: target,
+                returnID: AEReturnID(kAutoGenerateReturnID),
+                transactionID: AETransactionID(kAnyTransactionID)
+            )
+            _ = try? reopenEvent.sendEvent(options: [.noReply], timeout: 1)
+            configuration.appleEvent = reopenEvent
+        }
+        NSWorkspace.shared.openApplication(
+            at: applicationURL,
+            configuration: configuration
+        ) { application, _ in
+            Task { @MainActor in
+                guard let application else { return }
+                application.unhide()
+                _ = restoreOrRaiseChatGPTWindows(for: application)
+                application.activate(options: [.activateAllWindows])
+            }
+        }
+    }
+
+    private static func restoreOrRaiseChatGPTWindows(for application: NSRunningApplication) -> Bool {
+        let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
+        var rawWindows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            applicationElement,
+            kAXWindowsAttribute as CFString,
+            &rawWindows
+        ) == .success,
+        let windows = rawWindows as? [AXUIElement],
+        !windows.isEmpty else { return false }
+
+        for window in windows {
+            var rawMinimized: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                window,
+                kAXMinimizedAttribute as CFString,
+                &rawMinimized
+            ) == .success,
+            let isMinimized = rawMinimized as? Bool,
+            isMinimized {
+                AXUIElementSetAttributeValue(
+                    window,
+                    kAXMinimizedAttribute as CFString,
+                    kCFBooleanFalse
+                )
+            }
+        }
+
+        if let firstWindow = windows.first {
+            AXUIElementSetAttributeValue(
+                firstWindow,
+                kAXMainAttribute as CFString,
+                kCFBooleanTrue
+            )
+            AXUIElementPerformAction(firstWindow, kAXRaiseAction as CFString)
+        }
+        return true
     }
 
     func showDashboard() {
