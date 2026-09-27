@@ -10,12 +10,12 @@ macOS 保留摄像头缺口融合、顶部隐藏区域悬停、菜单图标避�
 
 | 系统 | 对应版本 | 直接下载 |
 | --- | --- | --- |
-| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-macOS-arm64-3.0.0.zip) |
-| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-macOS-x86_64-3.0.0.zip) |
-| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-x64-3.0.0-Setup.exe) |
-| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-arm64-3.0.0-Setup.exe) |
-| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-x64-3.0.0.zip) |
-| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-arm64-3.0.0.zip) |
+| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-macOS-arm64-3.0.1.zip) |
+| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-macOS-x86_64-3.0.1.zip) |
+| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-Windows-x64-3.0.1-Setup.exe) |
+| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-Windows-arm64-3.0.1-Setup.exe) |
+| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-Windows-x64-3.0.1.zip) |
+| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.1/TokenLens-Windows-arm64-3.0.1.zip) |
 
 需要 macOS 14+ 或 Windows 10/11。安装包包含运行环境，使用者无需装开发工具。本项目暂未申请 Apple 公证或 Windows 签名证书，首次打开可能有系统提示。
 
@@ -35,7 +35,7 @@ DSH：先启动一次 DeepSeek Harness，再完全退出。Mac 运行 ZIP 内的
 - DSH 完成反馈读取 `.dsh/sessions` 的 v4 压缩记录；模型与余额由随包提供的 Harness 插件写入本机状态文件。未登录、未连接、失败与成功分别显示。
 - CC Switch 第三方模型可显示兼容的 DeepSeek / Kimi 余额；第三方余额与 GPT 订阅额度使用不同标签。Windows 只向对应官方 HTTPS 余额端点发送已配置凭据。
 - 只将明确的用户任务完成事件作为成功反馈；取消、错误、子任务和日志写入不会触发完成动画。首次启动不重播历史任务。
-- 不上传聊天记录、密码、账号凭据或本机状态。公开源码与发行包不包含个人账号数据。
+- 不向 GitHub 或项目服务器上传聊天记录、账号凭据或本机状态。余额查询使用 Harness 已登录账号或对应官方接口；凭据不会写入岛的状态文件。公开源码与发行包不包含个人账号数据。
 
 ## 开发与验证
 

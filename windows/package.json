@@ -1,6 +1,6 @@
 {
   "name": "tokenlens-windows",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "description": "GPT and DeepSeek Harness Dynamic Island for Windows",
   "author": "TokenLens contributors",
@@ -10,7 +10,7 @@
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
     "smoke": "electron . --smoke-test",
-    "build": "electron-builder --win nsis zip"
+    "build": "node build.cjs"
   },
   "dependencies": { "fzstd": "0.1.1", "koffi": "3.3.1" },
   "devDependencies": { "electron": "44.4.5", "electron-builder": "26.15.3" },
@@ -18,9 +18,10 @@
     "appId": "cn.liuli.tokenlens",
     "productName": "TokenLens",
     "directories": { "output": "dist" },
-    "files": ["*.cjs", "*.html", "*.css", "lib/**", "assets/**", "package.json"],
+    "files": ["*.cjs", "*.html", "*.css", "lib/**", "assets/**", "package.json", "!node_modules/@koromix/**", "!build.cjs", "!prepare-native.cjs"],
     "extraResources": [{ "from": "../Integration/tokenlens-dsh-status.mjs", "to": "tokenlens-dsh-status.mjs" },
-      { "from": "../LICENSE", "to": "LICENSE.txt" }],
+      { "from": "../LICENSE", "to": "LICENSE.txt" },
+      { "from": ".build/native/koffi", "to": "koffi" }],
     "asarUnpack": ["node_modules/koffi/**"],
     "win": {
       "target": ["nsis", "zip"],
