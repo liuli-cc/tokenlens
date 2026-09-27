@@ -1,0 +1,41 @@
+{
+  "name": "tokenlens-windows",
+  "version": "3.0.0",
+  "private": true,
+  "description": "GPT and DeepSeek Harness Dynamic Island for Windows",
+  "author": "TokenLens contributors",
+  "license": "MIT",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "smoke": "electron . --smoke-test",
+    "build": "electron-builder --win nsis zip"
+  },
+  "dependencies": { "fzstd": "0.1.1", "koffi": "3.3.1" },
+  "devDependencies": { "electron": "44.4.5", "electron-builder": "26.15.3" },
+  "build": {
+    "appId": "cn.liuli.tokenlens",
+    "productName": "TokenLens",
+    "directories": { "output": "dist" },
+    "files": ["*.cjs", "*.html", "*.css", "lib/**", "assets/**", "package.json"],
+    "extraResources": [{ "from": "../Integration/tokenlens-dsh-status.mjs", "to": "tokenlens-dsh-status.mjs" },
+      { "from": "../LICENSE", "to": "LICENSE.txt" }],
+    "asarUnpack": ["node_modules/koffi/**"],
+    "win": {
+      "target": ["nsis", "zip"],
+      "icon": "assets/icon.ico",
+      "artifactName": "TokenLens-Windows-${arch}-${version}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "TokenLens-Windows-${arch}-${version}-Setup.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerLanguages": ["zh_CN", "en_US"],
+      "displayLanguageSelector": true
+    }
+  }
+}

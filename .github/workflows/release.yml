@@ -1,0 +1,113 @@
+name: Build and release TokenLens
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish this commit as the version in VERSION after all checks pass'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: windows
+      - run: npm test
+        working-directory: windows
+      - name: Build installer and portable package
+        run: npx electron-builder --win nsis zip --${{ matrix.arch }}
+        working-directory: windows
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Start the packaged application and verify its UI and native bridge
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $env:TOKENLENS_SMOKE_OUTPUT = Join-Path $env:RUNNER_TEMP 'tokenlens-smoke'
+          $process = Start-Process -FilePath './windows/dist/win-unpacked/TokenLens.exe' -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(45000)) { $process.Kill(); throw 'Packaged smoke test timed out' }
+          if ($process.ExitCode -ne 0) { throw "Packaged smoke test failed: $($process.ExitCode)" }
+          $result = Get-Content (Join-Path $env:TOKENLENS_SMOKE_OUTPUT 'smoke.json') | ConvertFrom-Json
+          if (-not $result.passed -or -not $result.native) { throw 'Native bridge or UI check failed' }
+          Get-Content (Join-Path $env:TOKENLENS_SMOKE_OUTPUT 'smoke.json')
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            windows/dist/TokenLens-Windows-*-Setup.exe
+            windows/dist/TokenLens-Windows-*.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'x64' && always()
+        with:
+          name: windows-smoke-evidence
+          path: ${{ runner.temp }}/tokenlens-smoke
+          if-no-files-found: warn
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install test-only compressor
+        run: brew install zstd
+      - name: Run native scanner, animation and geometry checks
+        run: ./build.sh
+      - name: Build portable app with its own decompressor
+        run: bash Release/build-macos.sh '${{ matrix.arch }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}
+          path: release-out/TokenLens-macOS-*.zip
+          if-no-files-found: error
+  release:
+    name: Publish downloads
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-*
+          merge-multiple: true
+          path: release-out
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: release-out
+      - name: Verify version and publish the six platform downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat VERSION)"
+          tag="v${version}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "$tag"; fi
+          python3 Release/verify-assets.py release-out "$version"
+          cd release-out
+          sha256sum TokenLens-*.exe TokenLens-*.zip > SHA256SUMS.txt
+          cd ..
+          gh release create "$tag" \
+            release-out/TokenLens-*.exe release-out/TokenLens-*.zip release-out/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "TokenLens ${version} · GPT / DSH 灵动岛" --notes-file Release/RELEASE_NOTES.md

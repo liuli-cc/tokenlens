@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'">
+<title>TokenLens</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<main id="island" aria-label="TokenLens 灵动岛">
+  <svg id="shape" aria-hidden="true"><path id="silhouette" fill="black"/></svg>
+  <div id="crown"><button id="compactModel" data-action="open-assistant"><span id="modelPrimary">等待模型</span><span id="modelSecondary"></span></button>
+    <span id="tinyActivity" aria-hidden="true"><i></i><i></i><i></i></span><button id="compactMetric" data-action="details">--</button></div>
+  <section id="body"><div class="heading"><span id="activity"><i></i><i></i><i></i><span class="check">✓</span></span><div><h1 id="expandedModel"></h1><p id="taskState">等待任务</p></div><button class="balance" data-action="open-balance"><strong id="bigMetric">--</strong><span id="metricLabel">剩余额度</span></button></div>
+    <div id="stats"><div><strong id="statOne">--</strong><span id="labelOne">今日 Token</span></div><div><strong id="statTwo">--</strong><span id="labelTwo">上下文</span></div><div><strong id="statThree">--</strong><span id="labelThree">缓存命中</span></div></div>
+    <footer><button data-action="open-assistant" id="returnButton">↗ 返回 GPT</button><button data-action="details">用量详情</button></footer>
+  </section>
+</main>
+<main id="dashboard" hidden><nav><div><span class="brand">TokenLens</span><span id="version"></span></div><div class="tabs"><button data-action="select-gpt" id="tabGPT">GPT</button><button data-action="select-dsh" id="tabDSH">DSH</button></div><button data-action="refresh">刷新</button></nav>
+  <section class="hero"><div><span class="eyebrow" id="detailProvider"></span><h1 id="detailModel"></h1><p id="detailState"></p></div><div class="quota"><strong id="detailMetric"></strong><span id="detailMetricLabel"></span></div></section>
+  <section class="detailStats" id="detailStats"></section>
+  <section class="card" id="historyCard"><div class="cardHead"><h2>最近 7 天</h2><span>Token 用量</span></div><div id="history"></div></section>
+  <section class="card" id="modelsCard"><h2>模型用量</h2><div id="models"></div></section>
+  <section class="card" id="dshCard" hidden><h2>DeepSeek Harness 状态</h2><p id="dshHelp"></p><button class="primary" data-action="connect-dsh">连接状态桥</button><p class="muted">余额来自 Harness 账号接口；任务反馈来自本机任务记录。</p></section>
+  <p id="dataNote" class="muted"></p>
+</main><script src="renderer.cjs"></script></body></html>

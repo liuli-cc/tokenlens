@@ -64,6 +64,87 @@ struct ProviderBalance: Equatable, Sendable {
     }
 }
 
+struct TaskCompletionNotice: Identifiable, Equatable, Sendable {
+    let id: String
+    let sessionID: String
+    let turnID: String
+    let title: String
+    let provider: String
+    let model: String
+    let source: String
+    let usage: TokenUsage
+    let quotaUsedPercent: Double?
+    let costUSD: Double?
+    let startedAt: Date
+    let completedAt: Date
+
+    var isDeepSeek: Bool { source == "DeepSeek Harness" }
+
+    var usesExternalModel: Bool {
+        source == "CC Switch"
+    }
+
+    var secondaryMetricTitle: String {
+        usesExternalModel ? "费用约" : "额度消耗"
+    }
+
+    var secondaryMetricValue: String {
+        if usesExternalModel {
+            guard let costUSD else { return "未返回" }
+            if costUSD > 0, costUSD < 0.0001 {
+                return "<$0.0001"
+            }
+            let digits = costUSD < 1 ? 4 : 2
+            return String(format: "$%.*f", digits, costUSD)
+        }
+        guard let quotaUsedPercent else { return "未返回" }
+        if quotaUsedPercent == 0 { return "<1%" }
+        return quotaUsedPercent.oneDecimalPercent
+    }
+}
+
+enum QuotaDeltaCalculator {
+    static func delta(
+        startUsedPercent: Double?,
+        startResetAt: Date?,
+        endUsedPercent: Double?,
+        endResetAt: Date?
+    ) -> Double? {
+        guard let startUsedPercent,
+              let startResetAt,
+              let endUsedPercent,
+              let endResetAt,
+              startResetAt == endResetAt,
+              endUsedPercent >= startUsedPercent else { return nil }
+        return endUsedPercent - startUsedPercent
+    }
+}
+
+struct CompletionNoticeGate: Sendable {
+    private(set) var hasSeeded = false
+    private(set) var lastCompletionID: String?
+
+    mutating func nextNotice(
+        from completion: TaskCompletionNotice?,
+        now: Date = Date(),
+        freshness: TimeInterval = 90
+    ) -> TaskCompletionNotice? {
+        guard hasSeeded else {
+            hasSeeded = true
+            lastCompletionID = completion?.id
+            return nil
+        }
+
+        guard let completion,
+              completion.id != lastCompletionID else { return nil }
+        lastCompletionID = completion.id
+
+        let age = now.timeIntervalSince(completion.completedAt)
+        guard age >= -5, age <= freshness else { return nil }
+        return completion
+    }
+}
+
 struct DayUsage: Identifiable, Equatable, Sendable {
     let date: Date
     let usage: TokenUsage
@@ -107,6 +188,8 @@ struct UsageSnapshot: Equatable, Sendable {
     var sessionsToday: Int = 0
     var lastEventAt: Date?
     var filesObserved: Int = 0
+    var latestCompletion: TaskCompletionNotice? = nil
+    var isTaskRunning = false
 
     static let empty = UsageSnapshot()
 

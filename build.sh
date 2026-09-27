@@ -6,17 +6,30 @@ cd "$project_dir"
 
 build_cache="/tmp/tokenlens-build-cache"
 mkdir -p "$build_cache/clang" "$build_cache/swiftpm"
-export SDKROOT="/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk"
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 export CLANG_MODULE_CACHE_PATH="$build_cache/clang"
 export SWIFTPM_MODULECACHE_OVERRIDE="$build_cache/swiftpm"
 
 self_test="$build_cache/TokenLensScannerSelfTest"
 swiftc -parse-as-library \
+  -target "$(uname -m)-apple-macosx14.0" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/CodexLogScanner.swift" \
   "$project_dir/Tests/ScannerSelfTest.swift" \
   -o "$self_test"
 "$self_test"
+
+island_test="$build_cache/TokenLensIslandSelfTest"
+swiftc -parse-as-library \
+  -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/UsageModels.swift" \
+  "$project_dir/Sources/IslandGeometry.swift" \
+  "$project_dir/Sources/IslandCompactText.swift" \
+  "$project_dir/Sources/MenuBarOccupancy.swift" \
+  "$project_dir/Sources/DeepSeekActivity.swift" \
+  "$project_dir/Tests/IslandSelfTest.swift" \
+  -o "$island_test"
+"$island_test"
 
 swift build -c release --disable-sandbox \
   --cache-path "$build_cache/package-cache" \

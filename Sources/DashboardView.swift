@@ -2,6 +2,14 @@ import AppKit
 import Charts
 import SwiftUI
 
+private enum TokenAccent {
+    static let color = Color(red: 0.76, green: 0.57, blue: 1)
+    static let gradient = LinearGradient(
+        colors: [Color(red: 0.66, green: 0.45, blue: 1), Color(red: 0.95, green: 0.65, blue: 0.96)],
+        startPoint: .bottomLeading, endPoint: .topTrailing
+    )
+}
+
 struct DashboardView: View {
     @EnvironmentObject private var store: UsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,6 +47,7 @@ struct DashboardView: View {
         }
         .background(Color.tokenBackground)
         .foregroundStyle(Color.tokenInk)
+        .tint(TokenAccent.color)
         .onReceive(refreshTimer) { _ in store.refresh() }
         .onAppear {
             if reduceMotion {
@@ -70,6 +79,7 @@ struct DashboardView: View {
                 LiveIndicator(isActive: store.errorMessage == nil)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(store.snapshot.currentModel)
+                        .foregroundStyle(TokenAccent.gradient)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -200,7 +210,7 @@ struct DashboardView: View {
                     x: .value("日期", item.date, unit: .day),
                     y: .value("Token", item.usage.totalTokens)
                 )
-                .foregroundStyle(Color.tokenInk.gradient)
+                .foregroundStyle(TokenAccent.gradient)
                 .cornerRadius(4)
             }
             .chartXAxis {
@@ -488,7 +498,7 @@ private struct RingGauge: View {
             Circle()
                 .trim(from: 0, to: animatedPercent / 100)
                 .stroke(
-                    Color.tokenInk,
+                    TokenAccent.gradient,
                     style: StrokeStyle(lineWidth: 7, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
@@ -522,6 +532,7 @@ private struct FlatMetric: View {
                 .tracking(0.6)
                 .foregroundStyle(Color.tokenMuted)
             Text(value)
+                .foregroundStyle(TokenAccent.gradient)
                 .font(.system(size: 29, weight: .medium, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText())
@@ -599,7 +610,7 @@ private struct LiveIndicator: View {
 
     var body: some View {
         Circle()
-            .fill(isActive ? Color.tokenInk : Color.tokenMuted)
+            .fill(isActive ? TokenAccent.color : Color.tokenMuted)
             .frame(width: 6, height: 6)
             .scaleEffect(breathing ? 1.25 : 0.85)
             .opacity(breathing ? 0.55 : 1)
@@ -617,7 +628,7 @@ private struct TokenLensMark: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.tokenInk)
+                .fill(TokenAccent.gradient)
             Image(systemName: "waveform.path.ecg")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.tokenBackground)

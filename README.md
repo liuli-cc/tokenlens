@@ -1,90 +1,63 @@
-# TokenLens
+# TokenLens · GPT / DSH 灵动岛
 
-TokenLens is a native macOS background companion for Codex / ChatGPT usage. It shows a minimal black-and-white Dynamic Island at the top of the screen, starts with ChatGPT, and exits when ChatGPT exits.
+一个融合在屏幕顶部的助手状态岛。GPT 使用渐变紫，DeepSeek Harness 使用蓝紫；胶囊显示当前模型与额度，悬停后弹开详情，任务完成时给出短暂反馈。
 
-[中文说明 / Chinese](#中文说明)
+macOS 保留摄像头缺口融合、顶部隐藏区域悬停、菜单图标避让和原生弹簧动画。Windows 采用适合其屏幕与任务栏的顶部胶囊，支持实际前台助手切换、多个显示器和托盘设置。
 
-## Features
+## 直接下载
 
-- **Dynamic Island UI** — Move the pointer to the top-center area to reveal a slow, elastic expansion; leaving the island collapses it immediately.
-- **Model and provider detection** — Reads `turn_context.payload.model` and `session_meta.payload.model_provider` from local Codex sessions.
-- **Token usage** — Input, cached input, output, and total tokens.
-- **Shared quota** — Remaining ChatGPT / Codex agentic quota percentage when reported by the local logs.
-- **Context metrics** — Context window, current length, cache hit rate, and a seven-day usage trend.
-- **CC Switch support** — Reads `~/.cc-switch/cc-switch.db` in read-only mode to show Codex providers, configured models, and the last 30 days of proxy usage. For active DeepSeek and Kimi providers, it displays the real balance returned by each provider's official API; a provider without a readable official balance endpoint is clearly labeled unavailable.
-- **Clickable balance** — While a CC Switch external provider is active, clicking the balance on the Dynamic Island opens that provider's API recharge page in the browser.
-- **Detailed dashboard** — Click the expanded island to inspect all models, trends, and metric definitions.
+**[打开最新版本下载页](https://github.com/liuli-cc/tokenlens/releases/latest)**。普通 Windows 电脑选择 x64，Apple M 系列 Mac 选择 arm64。
 
-## Requirements
+| 系统 | 对应版本 | 直接下载 |
+| --- | --- | --- |
+| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-macOS-arm64-3.0.0.zip) |
+| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-macOS-x86_64-3.0.0.zip) |
+| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-x64-3.0.0-Setup.exe) |
+| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-arm64-3.0.0-Setup.exe) |
+| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-x64-3.0.0.zip) |
+| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.0.0/TokenLens-Windows-arm64-3.0.0.zip) |
 
-- macOS 14 or later (Apple Silicon recommended).
-- ChatGPT installed at `/Applications/ChatGPT.app`.
-- Optional: CC Switch. If its database is not present, Codex log tracking continues normally.
+需要 macOS 14+ 或 Windows 10/11。安装包包含运行环境，使用者无需装开发工具。本项目暂未申请 Apple 公证或 Windows 签名证书，首次打开可能有系统提示。
 
-## Build and install
+## 安装与使用
 
-```bash
-chmod +x build.sh install.sh
+Mac：解压 ZIP，双击 `安装.command`，安装到 `~/Applications/TokenLens.app` 并启用联动。打开 Codex / GPT 或 Harness 后自动显示灵动岛；关闭两者后自动隐藏。悬停顶部展开，点击「返回」回到助手，点击「用量详情」看本机用量。
+
+Windows：运行 `Setup.exe`，或完整解压免安装版后打开 `TokenLens.exe`。托盘菜单可以选择助手、跟随前台应用、选择显示器、连接 DSH 状态桥及开启开机启动。只把鼠标经过的黑色岛区域设为可交互，其余透明区域穿透点击。
+
+DSH：先启动一次 DeepSeek Harness，再完全退出。Mac 运行 ZIP 内的 `连接DSH.command`；Windows 点击托盘的「连接 DeepSeek Harness 状态」。然后重新打开 Harness，自动同步余额，发送下一条消息后同步当前模型。插件适配 Harness 桌面 Cordis profile / v4 会话记录；上游格式更改时可能需要更新。连接前会备份已有插件和配置。
+
+卸载：Mac 运行 `卸载.command` 停用联动，再删除个人 Applications 里的应用。Windows 使用系统「已安装的应用」卸载，免安装版退出后删除目录。DSH 插件独立保留；停用时从 `~/.dsh/profiles/desktop/cordis.patch.yml` 移除 `tokenlens-dsh-status` 插入项。
+
+## 数据从哪里来
+
+- GPT 模型、Token、上下文与订阅额度读取本机 `.codex/sessions` 日志；支持 `CODEX_HOME`。额度随新消息刷新，界面保留更新时间。普通 ChatGPT 网页或独立聊天客户端不生成这些日志时显示 `--`。
+- DSH 完成反馈读取 `.dsh/sessions` 的 v4 压缩记录；模型与余额由随包提供的 Harness 插件写入本机状态文件。未登录、未连接、失败与成功分别显示。
+- CC Switch 第三方模型可显示兼容的 DeepSeek / Kimi 余额；第三方余额与 GPT 订阅额度使用不同标签。Windows 只向对应官方 HTTPS 余额端点发送已配置凭据。
+- 只将明确的用户任务完成事件作为成功反馈；取消、错误、子任务和日志写入不会触发完成动画。首次启动不重播历史任务。
+- 不上传聊天记录、密码、账号凭据或本机状态。公开源码与发行包不包含个人账号数据。
+
+## 开发与验证
+
+```sh
+# Mac: Xcode Command Line Tools / Swift 6+
 ./build.sh
 ./install.sh
+# 可携带的发行包（包含静态 zstd）：
+bash Release/build-macos.sh arm64
+bash Release/build-macos.sh x86_64
+
+# Windows: Node.js 22+
+cd windows
+npm ci
+npm test
+npm start
+npm run build -- --x64
+npm run build -- --arm64
 ```
 
-`build.sh` runs the scanner self-test, builds the two Swift executables, packages `dist/TokenLens.app`, and signs the bundle locally.
+提交 `v*` 标签后，GitHub Actions 自动构建四种架构、运行检查，并发布六个下载包与 SHA-256 校验文件。Windows x64 在 CI 中启动打包后的程序验证 Win32 绑定与两个岛的 UI；ARM64 当前验证到交叉构建，真实 Windows 账号和 ARM 实机交互仍需实机验收。
 
-`install.sh` registers a per-user LaunchAgent at:
+源码：`Sources/` 和 `BridgeSources/` 为 macOS Swift / SwiftUI；`windows/` 为 Windows Electron / Win32；`Integration/` 为助手联动与 Harness 状态桥；`Release/` 为打包和安装脚本。
 
-```text
-~/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist
-```
-
-After installation, reopen ChatGPT. TokenLens will appear automatically. If ChatGPT is already running, synchronization normally takes about one second.
-
-To remove the automatic ChatGPT integration:
-
-```bash
-launchctl bootout "gui/$(id -u)/cn.liuli.tokenlens.chatgpt-bridge" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/cn.liuli.tokenlens.chatgpt-bridge.plist"
-```
-
-## Data and privacy
-
-TokenLens reads only local files:
-
-- `~/.codex/sessions/**/*.jsonl` for token, model, context, and rate-limit events;
-- `~/.cc-switch/cc-switch.db` when CC Switch is installed, queried through a read-only SQLite URI.
-
-It never uploads logs or loads user/assistant message bodies into the dashboard. For a supported external provider, the API key already stored by CC Switch is used only in local memory to make that provider's official balance request; it is neither displayed nor persisted by TokenLens.
-
-## Known limitations
-
-- Quota percentage is `--` until a rate-limit event is available in the local Codex logs.
-- CC Switch coverage depends on its local schema and proxy request logs; some versions may expose fewer external-model records. Unsupported or undocumented provider balance APIs show **Unavailable** rather than a fabricated percentage.
-- The ChatGPT lifecycle bridge currently matches `/Applications/ChatGPT.app`. If ChatGPT is moved, update the path check in `BridgeSources/TokenLensBridge.swift`.
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
-
----
-
-## 中文说明
-
-TokenLens 是一个原生 macOS 后台助手，用来观察本机 Codex / ChatGPT 的 Token 使用情况。它不创建 Dock 图标，也不要求单独打开：打开 ChatGPT 时自动出现，退出 ChatGPT 时自动退出。
-
-### 功能
-
-- 顶部黑白动态岛：鼠标靠近屏幕顶部中央时缓慢展开，离开后立即收起。
-- 自动识别当前模型与提供商，并清晰标注 Codex 或 CC Switch 外部模型来源。
-- 显示 Token 消耗、共享额度百分比，或外部模型的真实余额、上下文长度、当前长度、缓存命中率和近 7 日趋势。
-- 使用 CC Switch 外部模型时，点击灵动岛上的余额会打开对应提供商的 API 充值页面。
-- 点击展开的小岛查看详细统计面板。
-
-### 使用
-
-```bash
-chmod +x build.sh install.sh
-./build.sh
-./install.sh
-```
-
-安装后重新打开 `/Applications/ChatGPT.app` 即可使用。统计数据只在本机读取 `~/.codex/sessions` 和可选的 `~/.cc-switch/cc-switch.db`，不上传日志，也不解析对话正文。外部模型余额仅调用该供应商的官方余额接口，API Key 只在本机内存中使用，不会显示或写入 TokenLens。
+MIT 许可证。随 Mac 包分发的 zstd 使用其 BSD 许可证；其他第三方许可证随 Windows 运行包保留。

@@ -1,631 +1,594 @@
 import AppKit
+import Combine
 import QuartzCore
 import SwiftUI
 
 @MainActor
-private final class TopPinnedPanel: NSPanel {
-    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        frameRect
-    }
+private final class IslandPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 @MainActor
-private final class IslandHostContainer: NSView {
-    let hostedView: NSView
-    let compactDesignWidth: CGFloat
-    var usesExpandedLayout = false {
-        didSet { needsLayout = true }
-    }
-
-    init(hostedView: NSView, compactDesignWidth: CGFloat) {
-        self.hostedView = hostedView
-        self.compactDesignWidth = compactDesignWidth
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        layer?.masksToBounds = true
-        hostedView.wantsLayer = true
-        hostedView.layer?.backgroundColor = NSColor.clear.cgColor
-        addSubview(hostedView)
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func layout() {
-        super.layout()
-        hostedView.frame = NSRect(
-            x: 0,
-            y: 0,
-            width: usesExpandedLayout ? bounds.width : compactDesignWidth,
-            height: bounds.height
-        )
-    }
+private final class IslandHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor
 final class IslandViewModel: ObservableObject {
     @Published var isExpanded = false
-    @Published var isJellySettling = false
-    @Published var notchGapWidth: CGFloat = 176
+    @Published var completionNotice: TaskCompletionNotice?
+    @Published var completionRevealed = false
+    @Published var bodyHeight: CGFloat = 0
+    @Published var layout = IslandGeometry.layout(screen: CGRect(x: 0, y: 0, width: 1920, height: 1080), safeTopInset: 0, leftAux: nil, rightAux: nil)
 }
 
 @MainActor
-final class IslandPanelController {
-    private let compactDesignSize = NSSize(width: 430, height: 33.5)
-    private let compactSize = NSSize(width: 358, height: 33.5)
-    private let expandedSize = NSSize(width: 548, height: 148)
-    private let topInset: CGFloat = 0
-
+final class IslandPanelController: NSObject {
     private let store: UsageStore
-    private let onOpenDetails: () -> Void
-    private let onOpenChatGPT: () -> Void
+    private let onOpenCurrentAssistant: () -> Void
     private let viewModel = IslandViewModel()
-    private let panel: TopPinnedPanel
-    private var hostContainer: IslandHostContainer!
-
+    // Two adjoining windows keep the widened body entirely below the menu band.
+    // There is no large transparent expanded window sitting on system icons.
+    private let bodyPanel = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    private let crown = IslandPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private var currentScreen: NSScreen?
     private var globalMonitor: Any?
     private var localMonitor: Any?
-    private var animationGeneration = 0
+    private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var cancellables = Set<AnyCancellable>()
+    private var hoverTask: Task<Void, Never>?
+    private var collapseTask: Task<Void, Never>?
+    private var completionTask: Task<Void, Never>?
+    private var occupancyTask: Task<Void, Never>?
+    private var occupancyTimer: Timer?
+    private var pointerTimer: Timer?
+    private var lastSampledPointer: CGPoint?
+    private var motionTimer: Timer?
+    private var lastMotionTime = CACurrentMediaTime()
+    private var heightSpring = IslandSpring(position: 0, target: 0)
+    private var widthSpring = IslandSpring(position: 400, target: 400)
+    private var occupied: [CGRect] = []
+    private var conservativeWings = true
 
-    init(
-        store: UsageStore,
-        onOpenDetails: @escaping () -> Void,
-        onOpenChatGPT: @escaping () -> Void
-    ) {
+    init(store: UsageStore, onOpenDetails: @escaping () -> Void, onOpenCurrentAssistant: @escaping () -> Void) {
         self.store = store
-        self.onOpenDetails = onOpenDetails
-        self.onOpenChatGPT = onOpenChatGPT
-        self.panel = TopPinnedPanel(
-            contentRect: NSRect(origin: .zero, size: compactSize),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.level = .statusBar
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.acceptsMouseMovedEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-
-        let rootView = DynamicIslandView(
-            viewModel: viewModel,
-            onHover: { [weak self] isInside in
-                if isInside {
-                    self?.expand()
-                } else {
-                    self?.collapseIfPointerIsOutside()
-                }
-            },
-            onTap: { [weak self] in
-                self?.handleTap()
-            },
-            onOpenChatGPT: onOpenChatGPT
-        )
-        .environmentObject(store)
-
-        let hostingView = NSHostingView(rootView: rootView)
-        hostContainer = IslandHostContainer(
-            hostedView: hostingView,
-            compactDesignWidth: compactDesignSize.width
-        )
-        panel.contentView = hostContainer
+        self.onOpenCurrentAssistant = onOpenCurrentAssistant
+        super.init()
+        bodyPanel.title = "TokenLens · 展开状态"
+        crown.title = "TokenLens · 顶部"
+        for panel in [crown, bodyPanel] {
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.isFloatingPanel = true
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.acceptsMouseMovedEvents = true
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            // isFloatingPanel mutates NSPanel's level; set the camera/menu-band
+            // level last so macOS's menu-bar background cannot cover the island.
+            panel.level = .statusBar
+        }
+        for (panel, part) in [(crown, IslandPart.crown), (bodyPanel, IslandPart.body)] {
+            let host = IslandHostingView(rootView: DynamicIslandView(
+                part: part, viewModel: viewModel,
+                onHover: { [weak self] inside in self?.hover(inside) },
+                onTap: { [weak self] in self?.handleTap() },
+                onOpenDetails: onOpenDetails, onOpenCurrentAssistant: onOpenCurrentAssistant
+            ).environmentObject(store))
+            host.sizingOptions = []
+            panel.contentView = host
+        }
+        store.$completionNotice.compactMap { $0 }.removeDuplicates(by: { $0.id == $1.id })
+            .sink { [weak self] notice in Task { @MainActor in self?.presentCompletionNotice(notice) } }
+            .store(in: &cancellables)
+        store.$activeAssistant.removeDuplicates().sink { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let notice = self.viewModel.completionNotice,
+                      notice.isDeepSeek != (self.store.activeAssistant == .deepSeek) else { return }
+                self.finishCompletionNotice(notice)
+            }
+        }.store(in: &cancellables)
     }
 
     func start() {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        if let screen {
-            updateCurrentScreen(screen)
-            panel.setFrame(compactFrame(on: screen), display: true)
+        currentScreen = NSScreen.main ?? NSScreen.screens.first
+        updateLayout(animated: false)
+        crown.orderFrontRegardless()
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
+            Task { @MainActor in self?.pointerMoved() }
         }
-        panel.orderFrontRegardless()
-        installPointerMonitors()
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+            return event
+        }
+        observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { [weak self] in
+            guard let self else { return }
+            if !NSScreen.screens.contains(where: { $0 == self.currentScreen }) {
+                self.currentScreen = NSScreen.main ?? NSScreen.screens.first
+            }
+            self.updateLayout(animated: false)
+            self.refreshOccupancy()
+        }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.didActivateApplicationNotification) { [weak self] in self?.refreshOccupancy() }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) { [weak self] in self?.updateTargets(animated: false) }
+        occupancyTimer = Timer(timeInterval: 5, target: self, selector: #selector(refreshOccupancy), userInfo: nil, repeats: true)
+        if let occupancyTimer { RunLoop.main.add(occupancyTimer, forMode: .common) }
+        // Window hover events may stop inside the hardware cutout. Sampling the
+        // position also detects a cursor that has become invisible there.
+        pointerTimer = Timer(timeInterval: 0.05, target: self, selector: #selector(samplePointer), userInfo: nil, repeats: true)
+        if let pointerTimer { RunLoop.main.add(pointerTimer, forMode: .common) }
+        refreshOccupancy()
+        samplePointer()
+    }
+
+    private func observe(_ center: NotificationCenter, _ name: Notification.Name, action: @escaping @MainActor () -> Void) {
+        let token = center.addObserver(forName: name, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { action() }
+        }
+        observers.append((center, token))
     }
 
     func stop() {
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-        }
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-        }
-        globalMonitor = nil
-        localMonitor = nil
+        hoverTask?.cancel(); collapseTask?.cancel(); completionTask?.cancel(); occupancyTask?.cancel()
+        occupancyTimer?.invalidate(); pointerTimer?.invalidate(); motionTimer?.invalidate()
+        cancellables.removeAll()
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        for (center, token) in observers { center.removeObserver(token) }
+        observers.removeAll()
+        crown.orderOut(nil); bodyPanel.orderOut(nil)
     }
 
-    private func installPointerMonitors() {
-        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
-
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            let point = NSEvent.mouseLocation
-            Task { @MainActor in
-                if event.type == .leftMouseDown {
-                    self?.handleTopCenterClick(at: point)
-                } else {
-                    self?.handlePointer(at: point)
-                }
+    @objc private func refreshOccupancy() {
+        guard occupancyTask == nil else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let apps = NSWorkspace.shared.runningApplications
+        var excluded = Set(apps.filter { ($0.bundleIdentifier ?? "").hasPrefix("cn.liuli.tokenlens") || ($0.localizedName ?? "").hasPrefix("TokenLens") }.map(\.processIdentifier))
+        excluded.insert(ownPID)
+        let excludedPIDs = excluded
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let systemMenus: Set<String> = ["com.apple.systemuiserver", "com.apple.controlcenter"]
+        let preferred = apps.filter { $0.processIdentifier == front || systemMenus.contains(($0.bundleIdentifier ?? "").lowercased()) }
+        var seen = Set<pid_t>()
+        let ids = (preferred + apps.filter { $0.activationPolicy != .prohibited })
+            .map(\.processIdentifier).filter { !excludedPIDs.contains($0) && seen.insert($0).inserted }
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        occupancyTask = Task { @MainActor [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                MenuBarOccupancy.read(processIDs: ids, frontmostPID: front, primaryTop: primaryTop, excludedPIDs: excludedPIDs)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.occupied = result.rectangles
+            self.conservativeWings = result.needsConservativeWings
+            self.occupancyTask = nil
+            self.updateLayout(animated: true)
+            if ProcessInfo.processInfo.environment["TOKENLENS_DIAGNOSTICS"] == "1" {
+                print("TokenLens diagnostics: pid=\(ownPID) axTrusted=\(result.accessibilityTrusted) cgItems=\(result.windowItems) axItems=\(result.accessibilityItems) conservative=\(result.needsConservativeWings) leftWing=\(self.viewModel.layout.leftWing) rightWing=\(self.viewModel.layout.rightWing) crownLevel=\(self.crown.level.rawValue) bodyLevel=\(self.bodyPanel.level.rawValue)")
+                fflush(stdout)
             }
         }
-
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            let point = NSEvent.mouseLocation
-            if event.type == .leftMouseDown {
-                var didHandleClick = false
-                MainActor.assumeIsolated {
-                    didHandleClick = self?.handleTopCenterClick(at: point) ?? false
-                }
-                return didHandleClick ? nil : event
-            }
-
-            Task { @MainActor in
-                self?.handlePointer(at: point)
-            }
-            return event
-        }
     }
 
-    @discardableResult
-    private func handleTopCenterClick(at point: NSPoint) -> Bool {
-        guard viewModel.isExpanded,
-              let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
-              chatGPTTriggerFrame(on: screen).contains(point) else { return false }
-
-        onOpenChatGPT()
-        return true
+    private func resolvedLayout(on screen: NSScreen) -> IslandLayout {
+        IslandGeometry.layout(screen: screen.frame, safeTopInset: screen.safeAreaInsets.top,
+                              leftAux: screen.auxiliaryTopLeftArea, rightAux: screen.auxiliaryTopRightArea,
+                              menuBarHeight: NSStatusBar.system.thickness, occupied: occupied,
+                              conservativeWings: conservativeWings)
     }
 
-    private func handlePointer(at point: NSPoint) {
-        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) else {
-            collapseImmediately()
-            return
-        }
-
-        let trigger = topTrigger(on: screen)
-        if viewModel.isExpanded {
-            if panel.frame.contains(point) || trigger.contains(point) {
-                updateCurrentScreen(screen)
-            } else {
-                collapseImmediately()
-            }
-        } else if panel.frame.contains(point) || trigger.contains(point) {
-            updateCurrentScreen(screen)
-            expand()
-        }
+    private func updateLayout(animated: Bool) {
+        guard let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+        let layout = resolvedLayout(on: screen)
+        guard layout != viewModel.layout || !animated else { return }
+        viewModel.layout = layout
+        crown.setFrame(layout.crownFrame, display: true)
+        updateTargets(animated: animated)
     }
 
-    private func updateCurrentScreen(_ screen: NSScreen) {
-        currentScreen = screen
-        viewModel.notchGapWidth = resolvedNotchGap(on: screen)
-    }
-
-    private func resolvedNotchGap(on screen: NSScreen) -> CGFloat {
-        guard let leftArea = screen.auxiliaryTopLeftArea,
-              let rightArea = screen.auxiliaryTopRightArea,
-              !leftArea.isEmpty,
-              !rightArea.isEmpty else {
-            return 176
-        }
-
-        let physicalGap = rightArea.minX - leftArea.maxX
-        guard physicalGap > 60 else { return 176 }
-        return min(210, max(150, physicalGap + 10))
-    }
-
-    private func topTrigger(on screen: NSScreen) -> NSRect {
-        let compactFrame = compactFrame(on: screen)
-        return NSRect(
-            x: compactFrame.minX - 12,
-            y: screen.frame.maxY - 24,
-            width: compactFrame.width + 24,
-            height: 24
-        )
-    }
-
-    private func chatGPTTriggerFrame(on screen: NSScreen) -> NSRect {
-        NSRect(
-            x: screen.frame.midX - viewModel.notchGapWidth / 2,
-            y: screen.frame.maxY - 34,
-            width: viewModel.notchGapWidth,
-            height: 34
-        )
-    }
-
-    private func collapseIfPointerIsOutside() {
-        let point = NSEvent.mouseLocation
-        guard !panel.frame.contains(point) else { return }
-
-        if let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }),
-           topTrigger(on: screen).contains(point) {
-            return
-        }
-        collapseImmediately()
-    }
-
-    private func expand() {
-        guard !viewModel.isExpanded else { return }
-
-        let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
-
-        animationGeneration += 1
-        let generation = animationGeneration
-        hostContainer.usesExpandedLayout = true
+    // This method is also exercised by the separate, explicitly synthetic preview.
+    func presentCompletionNotice(_ notice: TaskCompletionNotice) {
+        guard notice.isDeepSeek == (store.activeAssistant == .deepSeek) else { return }
+        completionTask?.cancel(); hoverTask?.cancel(); collapseTask?.cancel()
+        viewModel.completionNotice = notice
+        viewModel.completionRevealed = false
         viewModel.isExpanded = true
-        viewModel.isJellySettling = false
-
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if reduceMotion {
-            panel.setFrame(frame(for: expandedSize, on: screen), display: true)
-            return
+        updateTargets(animated: true)
+        completionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(190))
+            guard !Task.isCancelled, let self else { return }
+            self.viewModel.completionRevealed = true
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self.finishCompletionNotice(notice)
         }
+    }
 
-        let overshootSize = NSSize(width: expandedSize.width + 16, height: expandedSize.height + 10)
-        let overshootFrame = frame(for: overshootSize, on: screen)
-        let targetFrame = frame(for: expandedSize, on: screen)
+    private func finishCompletionNotice(_ notice: TaskCompletionNotice) {
+        guard viewModel.completionNotice?.id == notice.id else { return }
+        completionTask?.cancel()
+        viewModel.completionNotice = nil
+        viewModel.completionRevealed = false
+        store.dismissCompletionNotice(id: notice.id)
+        viewModel.isExpanded = contains(NSEvent.mouseLocation)
+        updateTargets(animated: true)
+    }
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.68
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.88, 0.26, 1.0)
-            panel.animator().setFrame(overshootFrame, display: true)
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self,
-                      self.animationGeneration == generation,
-                      self.viewModel.isExpanded else { return }
-                self.settleJelly(to: targetFrame, generation: generation)
+    private func contains(_ point: CGPoint) -> Bool {
+        viewModel.layout.cameraContains(point) || crownContains(point) || bodyContains(point)
+    }
+    private func crownContains(_ point: CGPoint) -> Bool {
+        guard viewModel.layout.crownContains(point) else { return false }
+        return CrownShape(radius: crownRadius).path(in: CGRect(origin: .zero, size: crown.frame.size))
+            .contains(CGPoint(x: point.x - crown.frame.minX, y: crown.frame.maxY - point.y))
+    }
+    private var crownRadius: CGFloat { max(0, viewModel.layout.bandHeight / 2 * (1 - min(1, viewModel.bodyHeight / 28))) }
+    private func bodyContains(_ point: CGPoint) -> Bool {
+        guard bodyPanel.isVisible, bodyPanel.frame.contains(point) else { return false }
+        return bodyShape.path(in: CGRect(origin: .zero, size: bodyPanel.frame.size))
+            .contains(CGPoint(x: point.x - bodyPanel.frame.minX, y: bodyPanel.frame.maxY - point.y))
+    }
+    private var bodyShape: IslandBodyShape {
+        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width)
+    }
+    private func updateHitTesting() {
+        let point = NSEvent.mouseLocation
+        crown.ignoresMouseEvents = !crownContains(point)
+        bodyPanel.ignoresMouseEvents = !bodyContains(point)
+    }
+    @objc private func samplePointer() {
+        let point = NSEvent.mouseLocation
+        guard lastSampledPointer != point else { return }
+        lastSampledPointer = point
+        pointerMoved()
+    }
+    private func pointerMoved() {
+        let point = NSEvent.mouseLocation
+        updateHitTesting()
+        if contains(point) { hover(true) }
+        else if !viewModel.isExpanded,
+                let target = NSScreen.screens.first(where: { resolvedLayout(on: $0).crownHoverContains(point) }),
+                target != currentScreen {
+            currentScreen = target
+            updateLayout(animated: false)
+            hover(true)
+        } else { hover(false) }
+    }
+    private func hover(_ reportedInside: Bool) {
+        guard viewModel.completionNotice == nil else { return }
+        // Leaving a visible wing for the invisible camera gap produces a SwiftUI
+        // exit event, but the cursor is still hovering over the same island.
+        let inside = reportedInside || contains(NSEvent.mouseLocation)
+        if inside {
+            collapseTask?.cancel(); collapseTask = nil
+            guard !viewModel.isExpanded, hoverTask == nil else { return }
+            hoverTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled, let self else { return }
+                self.hoverTask = nil
+                guard self.contains(NSEvent.mouseLocation) else { return }
+                self.viewModel.isExpanded = true
+                self.updateTargets(animated: true)
             }
-        }
-    }
-
-    private func settleJelly(to targetFrame: NSRect, generation: Int) {
-        viewModel.isJellySettling = true
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.24
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.20, 1.28, 0.36, 1.0)
-            panel.animator().setFrame(targetFrame, display: true)
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self,
-                      self.animationGeneration == generation,
-                      self.viewModel.isExpanded else { return }
-                self.viewModel.isJellySettling = false
-            }
-        }
-    }
-
-    private func collapseImmediately() {
-        guard viewModel.isExpanded else { return }
-
-        let screen = currentScreen ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return }
-
-        animationGeneration += 1
-        viewModel.isExpanded = false
-        viewModel.isJellySettling = false
-        hostContainer.usesExpandedLayout = false
-
-        let targetFrame = compactFrame(on: screen)
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            panel.setFrame(targetFrame, display: true)
-            return
-        }
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.16
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.40, 0.0, 1.0, 1.0)
-            panel.animator().setFrame(targetFrame, display: true)
-        }
-    }
-
-    private func handleTap() {
-        if viewModel.isExpanded {
-            onOpenDetails()
         } else {
-            expand()
+            hoverTask?.cancel(); hoverTask = nil
+            guard viewModel.isExpanded, collapseTask == nil else { return }
+            collapseTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, let self else { return }
+                self.collapseTask = nil
+                guard !self.contains(NSEvent.mouseLocation) else { return }
+                self.viewModel.isExpanded = false
+                self.updateTargets(animated: true)
+            }
         }
     }
-
-    private func frame(for size: NSSize, on screen: NSScreen) -> NSRect {
-        NSRect(
-            x: screen.frame.midX - size.width / 2,
-            y: screen.frame.maxY - size.height - topInset,
-            width: size.width,
-            height: size.height
-        )
+    private func handleTap() {
+        if let notice = viewModel.completionNotice { finishCompletionNotice(notice) }
+        onOpenCurrentAssistant()
     }
 
-    private func compactFrame(on screen: NSScreen) -> NSRect {
-        NSRect(
-            x: screen.frame.midX - compactDesignSize.width / 2,
-            y: screen.frame.maxY - compactSize.height - topInset,
-            width: compactSize.width,
-            height: compactSize.height
-        )
+    private func updateTargets(animated: Bool) {
+        advanceMotion()
+        heightSpring.target = viewModel.completionNotice != nil ? 88 : (viewModel.isExpanded ? 152 : 0)
+        widthSpring.target = Double(viewModel.isExpanded ? viewModel.layout.expandedWidth : viewModel.layout.bodyBaseWidth)
+        heightSpring.damping = viewModel.isExpanded ? 0.62 : 0.76
+        widthSpring.damping = heightSpring.damping
+        if !animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            heightSpring.settle(); widthSpring.settle()
+            motionTimer?.invalidate(); motionTimer = nil
+            applyMotion()
+            return
+        }
+        if motionTimer == nil {
+            lastMotionTime = CACurrentMediaTime()
+            let timer = Timer(timeInterval: 1 / 120, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
+            motionTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+    private func advanceMotion() {
+        let now = CACurrentMediaTime()
+        if motionTimer != nil {
+            heightSpring.advance(by: now - lastMotionTime)
+            widthSpring.advance(by: now - lastMotionTime)
+        }
+        lastMotionTime = now
+    }
+    @objc private func tick() {
+        advanceMotion()
+        if heightSpring.isSettled && widthSpring.isSettled {
+            heightSpring.settle(); widthSpring.settle()
+            motionTimer?.invalidate(); motionTimer = nil
+        }
+        applyMotion()
+        // A stationary pointer must track the contour as the spring moves it.
+        if viewModel.completionNotice == nil { hover(contains(NSEvent.mouseLocation)) }
+    }
+    private func applyMotion() {
+        let height = max(0, CGFloat(heightSpring.position))
+        let width = max(viewModel.layout.bodyBaseWidth, CGFloat(widthSpring.position))
+        viewModel.bodyHeight = height
+        if height > 0.25 {
+            bodyPanel.setFrame(viewModel.layout.bodyFrame(width: width, height: height), display: true)
+            if !bodyPanel.isVisible { bodyPanel.orderFrontRegardless() }
+        } else { bodyPanel.orderOut(nil) }
+        updateHitTesting()
+    }
+}
+
+private enum IslandPart { case crown, body }
+
+private struct CrownShape: Shape {
+    var radius: CGFloat
+    func path(in rect: CGRect) -> Path {
+        UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: min(radius, rect.height / 2),
+                               bottomTrailingRadius: min(radius, rect.height / 2), topTrailingRadius: 0,
+                               style: .continuous).path(in: rect)
+    }
+}
+
+private struct IslandBodyShape: Shape {
+    let neckWidth: CGFloat
+    func path(in rect: CGRect) -> Path {
+        let shoulder = min(23, rect.height / 2)
+        let bottom = min(28, rect.height / 2)
+        let halfNeck = min(neckWidth, rect.width) / 2
+        let l = rect.midX - halfNeck, r = rect.midX + halfNeck
+        return Path { p in
+            p.move(to: CGPoint(x: l, y: 0))
+            p.addLine(to: CGPoint(x: r, y: 0))
+            p.addCurve(to: CGPoint(x: rect.maxX, y: shoulder), control1: CGPoint(x: r, y: shoulder * 0.6), control2: CGPoint(x: rect.maxX, y: 0))
+            p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottom))
+            p.addQuadCurve(to: CGPoint(x: rect.maxX - bottom, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
+            p.addLine(to: CGPoint(x: bottom, y: rect.maxY))
+            p.addQuadCurve(to: CGPoint(x: 0, y: rect.maxY - bottom), control: CGPoint(x: 0, y: rect.maxY))
+            p.addLine(to: CGPoint(x: 0, y: shoulder))
+            p.addCurve(to: CGPoint(x: l, y: 0), control1: CGPoint(x: 0, y: 0), control2: CGPoint(x: l, y: shoulder * 0.6))
+            p.closeSubpath()
+        }
     }
 }
 
 private struct DynamicIslandView: View {
-    private let compactRightWingShift: CGFloat = 72
-
     @EnvironmentObject private var store: UsageStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let part: IslandPart
     @ObservedObject var viewModel: IslandViewModel
-    @State private var isQueueIslandRunning = false
-
     let onHover: (Bool) -> Void
     let onTap: () -> Void
-    let onOpenChatGPT: () -> Void
-
-    private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    let onOpenDetails: () -> Void
+    let onOpenCurrentAssistant: () -> Void
+    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+    private var deepSeek: Bool { store.activeAssistant == .deepSeek }
+    private var accent: Color { deepSeek ? Color(red: 0.49, green: 0.64, blue: 1) : Color(red: 0.76, green: 0.57, blue: 1) }
+    private var accentGradient: LinearGradient {
+        LinearGradient(colors: deepSeek
+            ? [Color(red: 0.36, green: 0.62, blue: 1), Color(red: 0.73, green: 0.53, blue: 1)]
+            : [Color(red: 0.66, green: 0.45, blue: 1), Color(red: 0.95, green: 0.65, blue: 0.96)],
+                       startPoint: .leading, endPoint: .trailing)
+    }
+    private var model: String { deepSeek ? store.deepSeekStatus.modelName : store.snapshot.currentModel }
+    private var assistant: String { deepSeek ? "DeepSeek Harness" : "GPT" }
+    private var activity: Bool { deepSeek ? store.deepSeekActivity.isRunning : store.snapshot.isTaskRunning }
+    private var metric: String { deepSeek ? store.deepSeekStatus.balanceDisplayValue : (store.snapshot.usesExternalModel ? store.snapshot.balanceDisplayValue : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--") }
+    private var metricTitle: String { deepSeek ? "账户余额" : store.snapshot.quotaMetricTitle }
+    private var crownShape: CrownShape { CrownShape(radius: max(0, viewModel.layout.bandHeight / 2 * (1 - min(1, viewModel.bodyHeight / 28)))) }
+    private var bodyShape: IslandBodyShape {
+        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width)
+    }
 
     var body: some View {
-        ZStack {
-            islandShape
-                .fill(Color.black)
-                .overlay {
-                    if !isAttachedToQueueIsland {
-                        islandShape
-                            .strokeBorder(
-                                Color.white.opacity(viewModel.isExpanded ? 0.12 : 0.08),
-                                lineWidth: 0.7
-                            )
-                    }
-                }
-                .padding(.trailing, viewModel.isExpanded ? 0 : compactRightWingShift)
-
-            if viewModel.isExpanded {
-                expandedContent
-                    .transition(.opacity.combined(with: .scale(scale: 0.90, anchor: .top)))
-            } else {
-                compactContent
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            }
+        Group {
+            if part == .crown { crownContent }
+            else { expandedBody }
         }
-        .scaleEffect(
-            x: viewModel.isJellySettling ? 1.012 : 1,
-            y: viewModel.isJellySettling ? 0.972 : 1,
-            anchor: .top
-        )
-        .overlay(alignment: .leading) {
-            GeometryReader { proxy in
-                Color.clear
-                    .frame(
-                        width: viewModel.isExpanded
-                            ? proxy.size.width
-                            : max(0, proxy.size.width - compactRightWingShift),
-                        height: proxy.size.height
-                    )
-                    .contentShape(Rectangle())
-                    .onHover(perform: onHover)
-                    .onTapGesture(perform: onTap)
-            }
-        }
-        .overlay(alignment: .top) {
-            if viewModel.isExpanded {
-                Button(action: onOpenChatGPT) {
-                    Color.clear
-                        .frame(width: viewModel.notchGapWidth, height: 34)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover(perform: onHover)
-                .help("打开 ChatGPT")
-                .accessibilityLabel("打开 ChatGPT")
-            }
-        }
-        .overlay(alignment: viewModel.isExpanded ? .topTrailing : .trailing) {
-            Color.clear
-                .frame(width: 150, height: viewModel.isExpanded ? 31 : 30)
-                .contentShape(Rectangle())
-                .onHover(perform: onHover)
-                .onTapGesture(perform: handleBalanceTap)
-                .help(rechargeHelpText)
-                .padding(.trailing, viewModel.isExpanded ? 17 : 14 + compactRightWingShift)
-                .padding(.top, viewModel.isExpanded ? 5 : 0)
-        }
-        .onAppear(perform: refreshQueueIslandAttachment)
-        .onReceive(refreshTimer) { _ in
-            store.refresh()
-            refreshQueueIslandAttachment()
-        }
-        .animation(
-            reduceMotion ? nil : .timingCurve(0.18, 0.88, 0.26, 1, duration: 0.58),
-            value: viewModel.isExpanded
-        )
-        .animation(
-            reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.48),
-            value: viewModel.isJellySettling
-        )
+        .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(viewModel.isExpanded ? "TokenLens 已展开，点击查看详细统计" : "TokenLens，用量监控")
+        .accessibilityLabel(viewModel.completionNotice != nil ? "任务完成，点击返回 \(assistant)" : "\(assistant) 灵动岛，\(activity ? "任务进行中" : "就绪")")
     }
 
-    private var islandShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 0,
-            bottomLeadingRadius: viewModel.isExpanded ? 30 : (isAttachedToQueueIsland ? 0 : 16.75),
-            bottomTrailingRadius: viewModel.isExpanded ? 30 : 16.75,
-            topTrailingRadius: 0,
-            style: .continuous
-        )
+    private var crownContent: some View {
+        ZStack {
+            crownShape.fill(Color.black)
+            HStack(spacing: 0) {
+                HStack(spacing: 4) {
+                    if viewModel.layout.leftWing >= 100 { signal.frame(width: 13, height: 18) }
+                    VStack(spacing: 0.5) {
+                        Text(IslandCompactText.model(model).primary)
+                            .font(.system(size: 10, weight: .semibold))
+                            .lineLimit(1).minimumScaleFactor(0.75).truncationMode(.middle)
+                        if let detail = IslandCompactText.model(model).secondary {
+                            Text(detail)
+                                .font(.system(size: 9, weight: .medium))
+                                .lineLimit(1).minimumScaleFactor(0.75).truncationMode(.middle)
+                        }
+                        if activity && viewModel.layout.leftWing < 100 {
+                            TimelineView(.animation(minimumInterval: 1 / 20, paused: reduceMotion)) { context in
+                                Capsule().fill(accentGradient)
+                                    .opacity(reduceMotion ? 0.8 : 0.55 + 0.35 * sin(context.date.timeIntervalSinceReferenceDate * 4.2))
+                            }
+                            .frame(height: 1.5).padding(.top, 1)
+                            .accessibilityHidden(true)
+                        }
+                    }
+                    .foregroundStyle(accentGradient)
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, viewModel.layout.leftWing >= 50 ? 6 : 2)
+                .frame(width: viewModel.layout.leftWing, height: viewModel.layout.bandHeight)
+                .clipped().contentShape(Rectangle()).onHover(perform: onHover).onTapGesture(perform: onTap)
+                .help("当前模型：\(model)")
+                .accessibilityLabel("当前模型 \(model)，\(activity ? "任务进行中" : "就绪")")
+                Color.clear.frame(width: viewModel.layout.gapWidth).allowsHitTesting(false).accessibilityHidden(true)
+                Text(IslandCompactText.metric(metric, characterBudget: viewModel.layout.rightWing < 38 ? 4 : 7))
+                    .font(.system(size: viewModel.layout.rightWing >= 42 ? 10.5 : 9, weight: .semibold, design: .rounded))
+                    .monospacedDigit().foregroundStyle(accentGradient)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .padding(.horizontal, viewModel.layout.rightWing >= 38 ? 3 : 1)
+                    .frame(width: viewModel.layout.rightWing, height: viewModel.layout.bandHeight)
+                    .clipped().contentShape(Rectangle()).onHover(perform: onHover).onTapGesture(perform: onTap)
+                    .help("\(metricTitle)：\(metric)")
+                    .accessibilityLabel("\(metricTitle) \(metric)")
+            }
+        }
+        .clipShape(crownShape)
+        .onReceive(timer) { _ in store.refresh() }
     }
 
-    private var isAttachedToQueueIsland: Bool {
-        !viewModel.isExpanded && isQueueIslandRunning
-    }
-
-    private func refreshQueueIslandAttachment() {
-        isQueueIslandRunning = NSWorkspace.shared.runningApplications.contains {
-            $0.bundleIdentifier == "com.liuli.cloud-zzz-queue-monitor"
+    private var expandedBody: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .top) {
+                bodyShape.fill(Color.black)
+                Group {
+                    if let notice = viewModel.completionNotice {
+                        completion(notice)
+                    } else { expanded }
+                }
+                .frame(width: geometry.size.width, height: viewModel.completionNotice == nil ? 152 : 88, alignment: .top)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+            .clipShape(bodyShape)
+            .contentShape(bodyShape)
+            .onHover(perform: onHover).onTapGesture(perform: onTap)
         }
     }
 
-    private var compactContent: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(compactModelName)
-                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
-                        .font(.system(size: 7.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.50))
-                        .lineLimit(1)
+    private var expanded: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                signal.frame(width: 24, height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model).font(.system(size: 13, weight: .semibold)).foregroundStyle(accentGradient).lineLimit(1)
+                    Text(activity ? "正在处理任务" : assistant)
+                        .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.58))
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(metric).font(.system(size: 16, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(accentGradient)
+                    Text(metricTitle).font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Color.clear
-                .frame(width: viewModel.notchGapWidth)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(compactMetricValue)
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white)
-                Text(store.snapshot.quotaMetricTitle)
-                    .font(.system(size: 7.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.46))
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .offset(x: -compactRightWingShift)
-        }
-        .padding(.horizontal, 14)
-    }
-
-    private var expandedContent: some View {
-        VStack(spacing: 11) {
-            HStack(spacing: 0) {
-                HStack(spacing: 9) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 23, height: 23)
-                        Image(systemName: "waveform.path.ecg")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(.black)
-                    }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(store.snapshot.currentModel)
-                            .font(.system(size: 11.5, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        Text("\(store.snapshot.currentProvider) · \(store.snapshot.currentSource)")
-                            .font(.system(size: 8, weight: .medium, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.48))
-                    }
+            HStack(spacing: 12) {
+                if deepSeek {
+                    IslandMetric(title: "账号", value: store.deepSeekStatus.accountDisplayValue)
+                    IslandMetric(title: "赠金", value: store.deepSeekStatus.bonusDisplayValue)
+                    IslandMetric(title: "工作区", value: store.deepSeekStatus.workspaceName)
+                } else {
+                    IslandMetric(title: "今日 Token", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
+                    IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
+                    IslandMetric(title: "缓存命中", value: store.snapshot.cacheHitRate.oneDecimalPercent)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Color.clear
-                    .frame(width: viewModel.notchGapWidth)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(store.snapshot.usesExternalModel
-                        ? store.snapshot.balanceDisplayValue
-                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--")
-                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                    Text(store.isScanning ? "正在扫描" : store.snapshot.sharedQuotaMetricTitle)
-                        .font(.system(size: 8, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.48))
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .frame(height: 31)
-
-            HStack(spacing: 0) {
-                IslandMetric(title: "今日 TOKEN", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
-                divider
-                IslandMetric(
-                    title: store.snapshot.quotaMetricTitle,
-                    value: store.snapshot.usesExternalModel
-                        ? store.snapshot.balanceDisplayValue
-                        : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
-                )
-                divider
-                IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
-                divider
-                IslandMetric(title: "缓存命中", value: store.snapshot.cacheHitRate.oneDecimalPercent)
-            }
-
-            HStack {
-                Text("点击查看详细趋势与全部模型")
-                    .font(.system(size: 8.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.40))
+            HStack(spacing: 12) {
+                Button(action: onOpenCurrentAssistant) { Label("返回 \(assistant)", systemImage: "arrow.up.right") }
+                    .buttonStyle(IslandButtonStyle(accent: accent))
                 Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.40))
+                if !deepSeek {
+                    if let rechargeURL = store.snapshot.providerRechargeURL {
+                        Button("充值") { NSWorkspace.shared.open(rechargeURL) }
+                            .buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
+                            .help("打开当前 API 提供方的充值页面")
+                    }
+                    Button("用量详情", action: onOpenDetails).buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
+                } else {
+                    Text(store.deepSeekStatus.balanceUpdatedAt == nil ? "余额暂未同步" : "本地状态已同步")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46))
+                }
             }
-        }
-        .padding(.horizontal, 17)
-        .padding(.top, 5)
-        .padding(.bottom, 12)
+        }.padding(.horizontal, 23).padding(.top, 15).padding(.bottom, 14)
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.12))
-            .frame(width: 1, height: 24)
+    private var signal: some View {
+        ZStack {
+            if activity {
+                TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
+                    HStack(spacing: 2.4) {
+                        ForEach(0..<3) { index in
+                            Capsule().fill(accentGradient).frame(width: 2.6, height: reduceMotion ? 10 : 5 + 8 * (0.5 + 0.5 * sin(context.date.timeIntervalSinceReferenceDate * 4.2 + Double(index) * 1.5)))
+                        }
+                    }
+                }
+            } else {
+                Image(systemName: deepSeek ? "sparkle" : "waveform.path")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(accentGradient)
+            }
+        }.accessibilityLabel(activity ? "任务进行中" : "就绪")
     }
 
-    private var compactModelName: String {
-        let name = store.snapshot.currentModel
-        return name.count > 15 ? String(name.prefix(14)) + "…" : name
-    }
-
-    private var compactMetricValue: String {
-        let value = store.snapshot.usesExternalModel
-            ? store.snapshot.balanceDisplayValue
-            : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--"
-        return value.count > 10 ? String(value.prefix(9)) + "…" : value
-    }
-
-    private var rechargeHelpText: String {
-        store.snapshot.providerRechargeURL == nil ? "余额" : "打开 API 充值页面"
-    }
-
-    private func handleBalanceTap() {
-        if let url = store.snapshot.providerRechargeURL {
-            NSWorkspace.shared.open(url)
-        } else {
-            onTap()
-        }
+    private func completion(_ notice: TaskCompletionNotice) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(accent.opacity(0.15))
+                Circle().stroke(accent.opacity(viewModel.completionRevealed ? 0 : 0.45), lineWidth: 1)
+                    .scaleEffect(reduceMotion ? 1 : (viewModel.completionRevealed ? 1.32 : 0.8))
+                CheckmarkShape().trim(from: 0, to: viewModel.completionRevealed ? 1 : 0)
+                    .stroke(accentGradient, style: StrokeStyle(lineWidth: 2.3, lineCap: .round, lineJoin: .round))
+                    .frame(width: 18, height: 15)
+            }.frame(width: 40, height: 40)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.48), value: viewModel.completionRevealed)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("任务完成").foregroundStyle(accentGradient)
+                    Text("· \(assistant)").foregroundStyle(.white.opacity(0.45))
+                }.font(.system(size: 10.5, weight: .semibold))
+                Text(notice.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(notice.isDeepSeek ? "已收到最终回复 · 点击返回查看" : "\(notice.usage.totalTokens.compactTokenString) Token · \(notice.secondaryMetricTitle) \(notice.secondaryMetricValue)")
+                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
+        }.padding(.horizontal, 24).padding(.vertical, 14)
     }
 }
 
+private struct CheckmarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+            path.addLine(to: CGPoint(x: rect.width * 0.36, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        }
+    }
+}
+private struct IslandButtonStyle: ButtonStyle {
+    let accent: Color
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 11, weight: .medium))
+            .foregroundStyle(accent.opacity(configuration.isPressed ? 0.6 : 1))
+            .padding(.vertical, 3).contentShape(Rectangle())
+    }
+}
 private struct IslandMetric: View {
     let title: String
     let value: String
-
     var body: some View {
-        VStack(spacing: 3) {
-            Text(value)
-                .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Text(title)
-                .font(.system(size: 7.5, weight: .semibold, design: .rounded))
-                .tracking(0.35)
-                .foregroundStyle(.white.opacity(0.40))
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value).font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+            Text(title).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }

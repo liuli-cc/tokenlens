@@ -8,15 +8,19 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
 
     private var islandController: IslandPanelController?
     private var dashboardWindowController: NSWindowController?
+    private var foregroundPollingTimer: Timer?
     private let chatGPTBundleIdentifier = "com.openai.codex"
+    private let deepSeekBundleIdentifier = "com.deepseek.dsh"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        guard isChatGPTRunning else {
+        guard isAssistantRunning else {
             NSApp.terminate(nil)
             return
         }
+
+        synchronizeActiveAssistant()
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -24,14 +28,25 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didTerminateApplicationNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceApplicationActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+        foregroundPollingTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.synchronizeActiveAssistant()
+            }
+        }
 
         let controller = IslandPanelController(
             store: store,
             onOpenDetails: { [weak self] in
                 self?.showDashboard()
             },
-            onOpenChatGPT: {
-                Self.openChatGPT()
+            onOpenCurrentAssistant: { [weak self] in
+                self?.openCurrentAssistant()
             }
         )
         islandController = controller
@@ -40,31 +55,88 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        foregroundPollingTimer?.invalidate()
+        foregroundPollingTimer = nil
         islandController?.stop()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @objc private func workspaceApplicationTerminated(_ notification: Notification) {
-        guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              isChatGPT(application) else { return }
-        NSApp.terminate(nil)
+    guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let terminatedAssistant = assistant(for: application) else { return }
+        guard isAssistantRunning else {
+            NSApp.terminate(nil)
+            return
+        }
+        if store.activeAssistant == terminatedAssistant {
+            store.setActiveAssistant(terminatedAssistant == .chatGPT ? .deepSeek : .chatGPT)
+        }
+    }
+
+    @objc private func workspaceApplicationActivated(_ notification: Notification) {
+        if let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+           let activeAssistant = assistant(for: application) {
+            store.setActiveAssistant(activeAssistant)
+        } else {
+            synchronizeActiveAssistant()
+        }
+    }
+
+    private func synchronizeActiveAssistant() {
+        if let frontmostAssistant = assistant(for: NSWorkspace.shared.frontmostApplication) {
+            store.setActiveAssistant(frontmostAssistant)
+        } else if isDeepSeekRunning && !isChatGPTRunning {
+            store.setActiveAssistant(.deepSeek)
+        } else if isChatGPTRunning && !isDeepSeekRunning {
+            store.setActiveAssistant(.chatGPT)
+        }
     }
 
     private var isChatGPTRunning: Bool {
         NSWorkspace.shared.runningApplications.contains(where: isChatGPT)
     }
 
+    private var isDeepSeekRunning: Bool {
+        NSWorkspace.shared.runningApplications.contains(where: isDeepSeek)
+    }
+
+    private var isAssistantRunning: Bool {
+        isChatGPTRunning || isDeepSeekRunning
+    }
+
     private func isChatGPT(_ application: NSRunningApplication) -> Bool {
-        guard application.bundleIdentifier == chatGPTBundleIdentifier else { return false }
-        return application.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
-            || application.localizedName == "ChatGPT"
+        let bundlePath = application.bundleURL?.standardizedFileURL.path ?? ""
+        return application.bundleIdentifier == chatGPTBundleIdentifier
+            || bundlePath.hasPrefix("/Applications/ChatGPT.app/")
+            || application.localizedName?.hasPrefix("ChatGPT") == true
+    }
+
+    private func isDeepSeek(_ application: NSRunningApplication) -> Bool {
+        let bundlePath = application.bundleURL?.standardizedFileURL.path ?? ""
+        return application.bundleIdentifier == deepSeekBundleIdentifier
+            || bundlePath.hasPrefix("/Applications/DeepSeek Harness.app/")
+            || application.localizedName?.hasPrefix("DeepSeek Harness") == true
+    }
+
+    private func assistant(for application: NSRunningApplication?) -> IslandAssistant? {
+        guard let application else { return nil }
+        if isChatGPT(application) { return .chatGPT }
+        if isDeepSeek(application) { return .deepSeek }
+        return nil
+    }
+
+    private func openCurrentAssistant() {
+        switch store.activeAssistant {
+        case .chatGPT:
+            Self.openChatGPT()
+        case .deepSeek:
+            Self.openDeepSeek()
+        }
     }
 
     static func openChatGPT() {
         let runningApplication = NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == "com.openai.codex"
-                && ($0.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
-                    || $0.localizedName == "ChatGPT")
         })
 
         if let runningApplication {
@@ -73,7 +145,8 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
             runningApplication.activate(options: [.activateAllWindows])
         }
 
-        let applicationURL = URL(fileURLWithPath: "/Applications/ChatGPT.app", isDirectory: true)
+        guard let applicationURL = runningApplication?.bundleURL
+            ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex") else { return }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.addsToRecentItems = false
@@ -100,6 +173,18 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
                 _ = restoreOrRaiseChatGPTWindows(for: application)
                 application.activate(options: [.activateAllWindows])
             }
+        }
+    }
+
+    static func openDeepSeek() {
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.deepseek.dsh") else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.addsToRecentItems = false
+        configuration.allowsRunningApplicationSubstitution = true
+        NSWorkspace.shared.openApplication(at: applicationURL, configuration: configuration) { application, _ in
+            application?.unhide()
+            application?.activate(options: [.activateAllWindows])
         }
     }
 

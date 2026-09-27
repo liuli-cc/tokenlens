@@ -5,3 +5,7 @@ DerivedData/
 xcuserdata/
 *.xcodeproj/
 *.xcworkspace/
+node_modules/
+release-out/
+test-output/
+*.log

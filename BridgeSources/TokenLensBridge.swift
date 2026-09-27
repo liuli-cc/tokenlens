@@ -5,6 +5,7 @@ import Foundation
 final class ChatGPTLifecycleBridge: NSObject {
     private let workspace = NSWorkspace.shared
     private let chatGPTBundleIdentifier = "com.openai.codex"
+    private let deepSeekBundleIdentifier = "com.deepseek.dsh"
     private let tokenLensBundleIdentifier = "cn.liuli.tokenlens"
     private var synchronizationTimer: Timer?
 
@@ -43,12 +44,14 @@ final class ChatGPTLifecycleBridge: NSObject {
     }
 
     private func synchronize() {
-        let chatGPTIsRunning = workspace.runningApplications.contains(where: isChatGPT)
+        let anAssistantIsRunning = workspace.runningApplications.contains {
+            isChatGPT($0) || isDeepSeek($0)
+        }
         let tokenLensApplications = workspace.runningApplications.filter {
             $0.bundleIdentifier == tokenLensBundleIdentifier
         }
 
-        if chatGPTIsRunning {
+        if anAssistantIsRunning {
             if tokenLensApplications.isEmpty {
                 launchTokenLens()
             }
@@ -58,9 +61,11 @@ final class ChatGPTLifecycleBridge: NSObject {
     }
 
     private func isChatGPT(_ application: NSRunningApplication) -> Bool {
-        guard application.bundleIdentifier == chatGPTBundleIdentifier else { return false }
-        return application.bundleURL?.standardizedFileURL.path == "/Applications/ChatGPT.app"
-            || application.localizedName == "ChatGPT"
+        application.bundleIdentifier == chatGPTBundleIdentifier
+    }
+
+    private func isDeepSeek(_ application: NSRunningApplication) -> Bool {
+        application.bundleIdentifier == deepSeekBundleIdentifier
     }
 
     private func launchTokenLens() {

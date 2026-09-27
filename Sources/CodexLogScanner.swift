@@ -6,16 +6,22 @@ actor CodexLogScanner {
     private let tokenMarker = Data("\"token_count\"".utf8)
     private let contextMarker = Data("\"turn_context\"".utf8)
     private let taskMarker = Data("\"task_started\"".utf8)
+    private let taskAbortedMarker = Data("\"turn_aborted\"".utf8)
+    private let taskCompleteMarker = Data("\"task_complete\"".utf8)
     private let sessionMarker = Data("\"session_meta\"".utf8)
     private let ccSwitchScanner: CCSwitchScanner
+    private let threadTitleStore: CodexThreadTitleStore
 
     init(
-        sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions", isDirectory: true),
-        ccSwitchScanner: CCSwitchScanner = CCSwitchScanner()
+        sessionsRoot: URL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEX_HOME"]
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex").path)
+            .appendingPathComponent("sessions", isDirectory: true),
+        ccSwitchScanner: CCSwitchScanner = CCSwitchScanner(),
+        threadTitleStore: CodexThreadTitleStore = CodexThreadTitleStore()
     ) {
         self.sessionsRoot = sessionsRoot
         self.ccSwitchScanner = ccSwitchScanner
+        self.threadTitleStore = threadTitleStore
     }
 
     func scan(now: Date = Date(), historyDays: Int = 7) async throws -> UsageSnapshot {
@@ -51,10 +57,26 @@ actor CodexLogScanner {
         }
 
         cache = cache.filter { observed.contains($0.key) }
-        let ccSwitch = await ccSwitchScanner.scan()
+        let latestCompletion = digests
+            .filter(\.isUserThread)
+            .compactMap(\.latestCompletion)
+            .max { $0.completedAt < $1.completedAt }
+        let completionQuotaUsedPercent = latestCompletion.flatMap { completion in
+            quotaUsedPercent(for: completion, across: digests)
+        }
+        let ccSwitch = await ccSwitchScanner.scan(
+            taskCostWindow: latestCompletion.map(TaskCostWindow.init)
+        )
+        let completionTitle = latestCompletion.flatMap { completion in
+            threadTitleStore.title(for: completion.sessionID)
+                ?? completion.fallbackTitle.nonEmpty
+        }
         return makeSnapshot(
             from: digests,
             ccSwitch: ccSwitch,
+            latestCompletion: latestCompletion,
+            completionTitle: completionTitle,
+            completionQuotaUsedPercent: completionQuotaUsedPercent,
             now: now,
             historyStart: historyStart,
             historyDays: historyDays,
@@ -125,9 +147,24 @@ actor CodexLogScanner {
     }
 
     private func process(line: Data, into digest: inout SessionDigest) {
+        if line.range(of: taskCompleteMarker) != nil {
+            guard let event = try? JSONDecoder().decode(TaskCompleteEnvelope.self, from: line),
+                  event.type == "event_msg",
+                  event.payload.type == "task_complete" else { return }
+            finishTask(
+                turnID: event.payload.turnID,
+                startedAt: event.payload.startedAt.map(Date.init(timeIntervalSince1970:)),
+                completedAt: event.payload.completedAt.map(Date.init(timeIntervalSince1970:)),
+                timestamp: event.timestamp.flatMap(parseDateString),
+                digest: &digest
+            )
+            return
+        }
+
         let relevant = line.range(of: tokenMarker) != nil ||
             line.range(of: contextMarker) != nil ||
             line.range(of: taskMarker) != nil ||
+            line.range(of: taskAbortedMarker) != nil ||
             line.range(of: sessionMarker) != nil
         guard relevant,
               let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -138,6 +175,16 @@ actor CodexLogScanner {
         let eventType = payload["type"] as? String
 
         if topLevelType == "session_meta" {
+            guard !digest.hasReadIdentity else { return }
+            digest.hasReadIdentity = true
+            if let sessionID = (payload["id"] as? String) ?? (payload["session_id"] as? String),
+               !sessionID.isEmpty {
+                digest.sessionID = sessionID
+            }
+            let threadSource = payload["thread_source"] as? String
+            let sourceIsSubagent = payload["source"] is [String: Any]
+            digest.isUserThread = !sourceIsSubagent
+                && (threadSource == nil || threadSource == "user")
             if let provider = payload["model_provider"] as? String, !provider.isEmpty {
                 digest.currentProvider = provider
             }
@@ -155,11 +202,28 @@ actor CodexLogScanner {
                     digest.unattributedTokens = 0
                 }
             }
+            if let summary = payload["summary"] as? String,
+               let title = normalizedConversationTitle(summary) {
+                digest.currentConversationTitle = title
+            }
+            digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
+            return
+        }
+
+        if topLevelType == "event_msg", eventType == "turn_aborted" {
+            digest.activeTurnID = nil
+            digest.activeTaskStartedAt = nil
+            digest.activeTaskUsage = .zero
             digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
             return
         }
 
         if eventType == "task_started" {
+            digest.activeTurnID = payload["turn_id"] as? String
+            digest.activeTaskStartedAt = dateFromEpoch(payload["started_at"]) ?? timestamp
+            digest.activeTaskUsage = .zero
+            digest.activeTaskQuotaUsedPercent = digest.quota?.usedPercent
+            digest.activeTaskQuotaResetAt = digest.quota?.resetsAt
             if let window = int64(payload["model_context_window"]), window > 0 {
                 digest.contextWindow = window
             }
@@ -178,6 +242,9 @@ actor CodexLogScanner {
             }
             digest.previousTotal = currentTotal
             digest.latestTotal = currentTotal
+            if digest.activeTurnID != nil {
+                digest.activeTaskUsage = digest.activeTaskUsage + delta
+            }
 
             if let timestamp {
                 let day = Calendar.current.startOfDay(for: timestamp)
@@ -208,14 +275,95 @@ actor CodexLogScanner {
                 planType: limits["plan_type"] as? String
             )
             digest.quotaEventAt = timestamp
+            if let timestamp {
+                digest.quotaSamples.append(
+                    QuotaSample(
+                        usedPercent: used,
+                        resetsAt: digest.quota?.resetsAt,
+                        recordedAt: timestamp
+                    )
+                )
+            }
         }
         digest.latestTokenAt = timestamp
         digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
     }
 
+    private func finishTask(
+        turnID rawTurnID: String?,
+        startedAt rawStartedAt: Date?,
+        completedAt rawCompletedAt: Date?,
+        timestamp: Date?,
+        digest: inout SessionDigest
+    ) {
+        let turnID = rawTurnID ?? digest.activeTurnID ?? ""
+        let completedAt = rawCompletedAt ?? timestamp
+        let startedAt = rawStartedAt ?? digest.activeTaskStartedAt ?? completedAt
+        if digest.latestCompletion?.turnID == turnID {
+            digest.latestEventAt = maxDate(digest.latestEventAt, completedAt ?? timestamp)
+            return
+        }
+        if !turnID.isEmpty,
+           !digest.sessionID.isEmpty,
+           let completedAt {
+            let quotaUsedPercent: Double?
+            quotaUsedPercent = QuotaDeltaCalculator.delta(
+                startUsedPercent: digest.activeTaskQuotaUsedPercent,
+                startResetAt: digest.activeTaskQuotaResetAt,
+                endUsedPercent: digest.quota?.usedPercent,
+                endResetAt: digest.quota?.resetsAt
+            )
+            digest.latestCompletion = RawTaskCompletion(
+                id: "\(digest.sessionID)|\(turnID)",
+                sessionID: digest.sessionID,
+                turnID: turnID,
+                fallbackTitle: digest.currentConversationTitle,
+                model: digest.currentModel.nonEmpty ?? "未知模型",
+                provider: digest.currentProvider,
+                usage: digest.activeTaskUsage,
+                quotaUsedPercent: quotaUsedPercent,
+                quotaEndUsedPercent: digest.quota?.usedPercent,
+                quotaResetAt: digest.quota?.resetsAt,
+                startedAt: startedAt ?? completedAt,
+                completedAt: completedAt
+            )
+        }
+        digest.activeTurnID = nil
+        digest.activeTaskStartedAt = nil
+        digest.activeTaskQuotaUsedPercent = nil
+        digest.activeTaskQuotaResetAt = nil
+        digest.activeTaskUsage = .zero
+        digest.latestEventAt = maxDate(digest.latestEventAt, completedAt ?? timestamp)
+    }
+
+    private func quotaUsedPercent(
+        for completion: RawTaskCompletion,
+        across digests: [SessionDigest]
+    ) -> Double? {
+        if let taskLocalDelta = completion.quotaUsedPercent {
+            return taskLocalDelta
+        }
+        guard let resetAt = completion.quotaResetAt else { return nil }
+        let baseline = digests
+            .flatMap(\.quotaSamples)
+            .filter { sample in
+                sample.recordedAt <= completion.startedAt && sample.resetsAt == resetAt
+            }
+            .max { $0.recordedAt < $1.recordedAt }
+        return QuotaDeltaCalculator.delta(
+            startUsedPercent: baseline?.usedPercent,
+            startResetAt: baseline?.resetsAt,
+            endUsedPercent: completion.quotaEndUsedPercent,
+            endResetAt: completion.quotaResetAt
+        )
+    }
+
     private func makeSnapshot(
         from digests: [SessionDigest],
         ccSwitch: CCSwitchSnapshot,
+        latestCompletion: RawTaskCompletion?,
+        completionTitle: String?,
+        completionQuotaUsedPercent: Double?,
         now: Date,
         historyStart: Date,
         historyDays: Int,
@@ -281,6 +429,29 @@ actor CodexLogScanner {
         }
         let activeProvider = activeCCProvider ?? displayProvider(active?.currentProvider ?? "openai")
         let activeSource = activeCCProvider == nil ? "Codex" : "CC Switch"
+        let completionNotice = latestCompletion.map { completion in
+            let providerIdentity = completion.provider.lowercased()
+            let usesExternalModel = ccSwitch.taskCost != nil
+                || (providerIdentity != "openai"
+                    && providerIdentity != "default"
+                    && !providerIdentity.contains("official"))
+            let completionProvider = ccSwitch.taskCost?.providers.joined(separator: " / ").nonEmpty
+                ?? (providerIdentity == "custom" ? "CC Switch" : displayProvider(completion.provider))
+            return TaskCompletionNotice(
+                id: completion.id,
+                sessionID: completion.sessionID,
+                turnID: completion.turnID,
+                title: completionTitle ?? "任务已完成",
+                provider: completionProvider,
+                model: completion.model,
+                source: usesExternalModel ? "CC Switch" : "Codex",
+                usage: completion.usage,
+                quotaUsedPercent: usesExternalModel ? nil : completionQuotaUsedPercent,
+                costUSD: usesExternalModel ? ccSwitch.taskCost?.costUSD : nil,
+                startedAt: completion.startedAt,
+                completedAt: completion.completedAt
+            )
+        }
 
         return UsageSnapshot(
             currentModel: active?.currentModel.nonEmpty ?? "等待 Codex",
@@ -297,8 +468,21 @@ actor CodexLogScanner {
             configuredModels: ccSwitch.configuredModels,
             sessionsToday: sessionsToday,
             lastEventAt: active?.latestEventAt,
-            filesObserved: filesObserved
+            filesObserved: filesObserved,
+            latestCompletion: completionNotice,
+            isTaskRunning: digests.contains { $0.isUserThread && $0.activeTurnID != nil && now.timeIntervalSince($0.latestEventAt ?? .distantPast) < 600 }
         )
+    }
+
+    private func normalizedConversationTitle(_ raw: String) -> String? {
+        let title = raw
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        let placeholders = ["none", "null", "n/a", "auto"]
+        guard !title.isEmpty,
+              title.count <= 300,
+              !placeholders.contains(title.lowercased()) else { return nil }
+        return title
     }
 
     private func displayProvider(_ raw: String) -> String {
@@ -343,6 +527,10 @@ actor CodexLogScanner {
 
     private func parseDate(_ value: Any?) -> Date? {
         guard let string = value as? String else { return nil }
+        return parseDateString(string)
+    }
+
+    private func parseDateString(_ string: String) -> Date? {
         if let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(string) {
             return date
         }
@@ -364,6 +552,26 @@ actor CodexLogScanner {
     }
 }
 
+private struct TaskCompleteEnvelope: Decodable {
+    let timestamp: String?
+    let type: String
+    let payload: Payload
+
+    struct Payload: Decodable {
+        let type: String
+        let turnID: String?
+        let startedAt: Double?
+        let completedAt: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case turnID = "turn_id"
+            case startedAt = "started_at"
+            case completedAt = "completed_at"
+        }
+    }
+}
+
 private struct CachedSession: Sendable {
     var size: UInt64
     var modifiedAt: Date
@@ -373,19 +581,195 @@ private struct CachedSession: Sendable {
 
 private struct SessionDigest: Sendable {
     let url: URL
+    var sessionID = ""
+    var hasReadIdentity = false
+    var isUserThread = false
     var currentModel = ""
     var currentProvider = "openai"
+    var currentConversationTitle = ""
     var latestTotal: TokenUsage = .zero
     var previousTotal: TokenUsage = .zero
     var lastCall: TokenUsage = .zero
     var contextWindow: Int64 = 0
     var quota: RateLimitWindow?
     var quotaEventAt: Date?
+    var quotaSamples: [QuotaSample] = []
     var latestTokenAt: Date?
     var latestEventAt: Date?
     var dailyUsage: [Date: TokenUsage] = [:]
     var modelTotals: [ModelIdentity: Int64] = [:]
     var unattributedTokens: Int64 = 0
+    var activeTurnID: String?
+    var activeTaskStartedAt: Date?
+    var activeTaskUsage: TokenUsage = .zero
+    var activeTaskQuotaUsedPercent: Double?
+    var activeTaskQuotaResetAt: Date?
+    var latestCompletion: RawTaskCompletion?
+}
+
+private struct RawTaskCompletion: Sendable {
+    let id: String
+    let sessionID: String
+    let turnID: String
+    let fallbackTitle: String
+    let model: String
+    let provider: String
+    let usage: TokenUsage
+    let quotaUsedPercent: Double?
+    let quotaEndUsedPercent: Double?
+    let quotaResetAt: Date?
+    let startedAt: Date
+    let completedAt: Date
+}
+
+private struct QuotaSample: Sendable {
+    let usedPercent: Double
+    let resetsAt: Date?
+    let recordedAt: Date
+}
+
+struct TaskCostWindow: Sendable {
+    let sessionID: String
+    let model: String
+    let provider: String
+    let startedAt: Date
+    let completedAt: Date
+
+    init(
+        sessionID: String,
+        model: String,
+        provider: String,
+        startedAt: Date,
+        completedAt: Date
+    ) {
+        self.sessionID = sessionID
+        self.model = model
+        self.provider = provider
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+    }
+
+    fileprivate init(_ completion: RawTaskCompletion) {
+        sessionID = completion.sessionID
+        model = completion.model
+        provider = completion.provider
+        startedAt = completion.startedAt
+        completedAt = completion.completedAt
+    }
+
+    var isLikelyExternal: Bool {
+        let normalized = provider.lowercased()
+        return !normalized.isEmpty
+            && normalized != "openai"
+            && normalized != "default"
+            && !normalized.contains("official")
+    }
+}
+
+struct CCSwitchTaskCost: Equatable, Sendable {
+    let costUSD: Double?
+    let providers: [String]
+}
+
+struct CodexThreadTitleStore: Sendable {
+    private let codexRoot: URL
+
+    init(codexRoot: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".codex", isDirectory: true)) {
+        self.codexRoot = codexRoot
+    }
+
+    func title(for sessionID: String) -> String? {
+        guard isSafeSessionID(sessionID) else { return nil }
+        if let database = newestStateDatabase() {
+            let sql = """
+            SELECT COALESCE(NULLIF(name, ''), NULLIF(title, ''), '')
+            FROM threads
+            WHERE id = '\(sessionID)'
+            LIMIT 1;
+            """
+            if let title = query(sql, database: database).first?.first.flatMap(normalizedTitle) {
+                return title
+            }
+        }
+        return indexTitle(for: sessionID)
+    }
+
+    private func indexTitle(for sessionID: String) -> String? {
+        let indexURL = codexRoot.appendingPathComponent("session_index.jsonl")
+        guard let data = try? Data(contentsOf: indexURL),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+
+        for line in text.split(whereSeparator: \.isNewline).reversed() {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  object["id"] as? String == sessionID,
+                  let rawTitle = (object["thread_name"] as? String) ?? (object["title"] as? String),
+                  let title = normalizedTitle(rawTitle) else { continue }
+            return title
+        }
+        return nil
+    }
+
+    private func newestStateDatabase() -> URL? {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: codexRoot,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        return files
+            .filter { $0.pathExtension == "sqlite" && $0.lastPathComponent.hasPrefix("state_") }
+            .sorted { lhs, rhs in
+                let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return lhsDate > rhsDate
+            }
+            .first
+    }
+
+    private func query(_ sql: String, database: URL) -> [[String]] {
+        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sqlite3") else { return [] }
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = [
+            "-separator", "\t",
+            "file:\(database.path)?mode=ro",
+            sql
+        ]
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(decoding: data, as: UTF8.self)
+                .split(whereSeparator: \.isNewline)
+                .map { line in
+                    line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                }
+        } catch {
+            return []
+        }
+    }
+
+    private func normalizedTitle(_ raw: String) -> String? {
+        let title = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let placeholders = ["none", "null", "n/a", "auto"]
+        guard !title.isEmpty,
+              title.count <= 300,
+              !placeholders.contains(title.lowercased()),
+              !title.lowercased().hasPrefix("the following is the codex agent history") else { return nil }
+        return title
+    }
+
+    private func isSafeSessionID(_ value: String) -> Bool {
+        !value.isEmpty && value.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || $0.value == 45
+        }
+    }
 }
 
 private struct ModelIdentity: Hashable, Sendable {
@@ -400,6 +784,7 @@ struct CCSwitchSnapshot: Sendable {
     var providerRechargeURL: URL?
     var configuredModels: [ConfiguredModel] = []
     var usage: [ModelUsage] = []
+    var taskCost: CCSwitchTaskCost? = nil
 }
 
 struct CCSwitchScanner: Sendable {
@@ -411,7 +796,7 @@ struct CCSwitchScanner: Sendable {
         self.databaseURL = databaseURL
     }
 
-    func scan() async -> CCSwitchSnapshot {
+    func scan(taskCostWindow: TaskCostWindow? = nil) async -> CCSwitchSnapshot {
         guard FileManager.default.fileExists(atPath: databaseURL.path),
               FileManager.default.isExecutableFile(atPath: "/usr/bin/sqlite3") else {
             return CCSwitchSnapshot()
@@ -461,7 +846,10 @@ struct CCSwitchScanner: Sendable {
         LEFT JOIN providers p ON p.id=l.provider_id AND p.app_type=l.app_type
         WHERE l.app_type='codex'
           AND substr(l.provider_id, 1, 1) != '_'
-          AND l.created_at >= CAST(strftime('%s','now','-30 day') AS INTEGER) * 1000
+          AND (CASE
+                WHEN l.created_at > 100000000000 THEN l.created_at / 1000
+                ELSE l.created_at
+               END) >= CAST(strftime('%s','now','-30 day') AS INTEGER)
         GROUP BY COALESCE(p.name, l.provider_id), l.model
         ORDER BY SUM(l.input_tokens + l.cache_read_tokens + l.cache_creation_tokens + l.output_tokens) DESC;
         """
@@ -495,21 +883,88 @@ struct CCSwitchScanner: Sendable {
         let activeCredentials = query(providerSQL).first.flatMap(ProviderCredentials.init(columns:))
         let activeProvider = activeCredentials?.name
         let providerBalance = await balanceReader.balance(for: activeCredentials)
+        let taskCost = taskCostWindow.flatMap(readTaskCost)
 
         return CCSwitchSnapshot(
             activeProvider: activeProvider,
             providerBalance: providerBalance,
             providerRechargeURL: activeCredentials?.rechargeURL,
             configuredModels: configured,
-            usage: usage
+            usage: usage,
+            taskCost: taskCost
         )
+    }
+
+    private func readTaskCost(window: TaskCostWindow) -> CCSwitchTaskCost? {
+        guard window.isLikelyExternal else { return nil }
+        let start = Int64(window.startedAt.timeIntervalSince1970.rounded(.down))
+        let end = Int64(window.completedAt.timeIntervalSince1970.rounded(.up))
+        let model = sqlLiteral(window.model)
+        let sql = """
+        SELECT COALESCE(p.name, l.provider_id),
+               l.total_cost_usd,
+               l.input_tokens + l.output_tokens + l.cache_read_tokens + l.cache_creation_tokens
+        FROM proxy_request_logs l
+        LEFT JOIN providers p ON p.id=l.provider_id AND p.app_type=l.app_type
+        WHERE l.app_type='codex'
+          AND substr(l.provider_id, 1, 1) != '_'
+          AND COALESCE(l.data_source, 'proxy')='proxy'
+          AND (l.model='\(model)' OR l.request_model='\(model)' OR l.pricing_model='\(model)')
+          AND (CASE
+                WHEN l.created_at > 100000000000 THEN l.created_at / 1000
+                ELSE l.created_at
+               END) BETWEEN \(start) AND \(end);
+        """
+        var rows = query(sql)
+        if rows.isEmpty {
+            let fallbackSQL = """
+            SELECT COALESCE(p.name, l.provider_id),
+                   l.total_cost_usd,
+                   l.input_tokens + l.output_tokens + l.cache_read_tokens + l.cache_creation_tokens
+            FROM proxy_request_logs l
+            LEFT JOIN providers p ON p.id=l.provider_id AND p.app_type=l.app_type
+            WHERE l.app_type='codex'
+              AND substr(l.provider_id, 1, 1) != '_'
+              AND COALESCE(l.data_source, 'proxy')='proxy'
+              AND (CASE
+                    WHEN l.created_at > 100000000000 THEN l.created_at / 1000
+                    ELSE l.created_at
+                   END) BETWEEN \(start) AND \(end);
+            """
+            rows = query(fallbackSQL)
+        }
+        guard !rows.isEmpty else { return nil }
+
+        var providers = Set<String>()
+        var total = Decimal.zero
+        var recordedTokens: Int64 = 0
+        for columns in rows where columns.count >= 3 {
+            if !columns[0].isEmpty {
+                providers.insert(columns[0])
+            }
+            if let value = Decimal(string: columns[1], locale: Locale(identifier: "en_US_POSIX")) {
+                total += value
+            }
+            recordedTokens += Int64(columns[2]) ?? 0
+        }
+        let costUSD = total == .zero && recordedTokens > 0
+            ? nil
+            : NSDecimalNumber(decimal: total).doubleValue
+        return CCSwitchTaskCost(
+            costUSD: costUSD,
+            providers: providers.sorted()
+        )
+    }
+
+    private func sqlLiteral(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "''")
     }
 
     private func query(_ sql: String) -> [[String]] {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        let readOnlyURI = "file:\(databaseURL.path)?mode=ro&immutable=1"
+        let readOnlyURI = "file:\(databaseURL.path)?mode=ro"
         process.arguments = [
             "-separator", "\t",
             readOnlyURI,
