@@ -2,10 +2,10 @@ GPT、DeepSeek Harness、WorkBuddy、Claude、CodeBuddy 共用一个顶部灵动
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Mac · Apple M 系列 | **TokenLens-macOS-arm64-3.1.0.zip** |
-| Mac · Intel | **TokenLens-macOS-x86_64-3.1.0.zip** |
-| Windows · Intel / AMD | **TokenLens-Windows-x64-3.1.0-Setup.exe** |
-| Windows · ARM / 骁龙 | **TokenLens-Windows-arm64-3.1.0-Setup.exe** |
+| Mac · Apple M 系列 | **TokenLens-macOS-arm64-3.1.1.zip** |
+| Mac · Intel | **TokenLens-macOS-x86_64-3.1.1.zip** |
+| Windows · Intel / AMD | **TokenLens-Windows-x64-3.1.1-Setup.exe** |
+| Windows · ARM / 骁龙 | **TokenLens-Windows-arm64-3.1.1-Setup.exe** |
 
 Windows 同名 `.zip` 是免安装版，完整解压后运行 `TokenLens.exe`。Mac 解压后运行 `安装.command`；DSH 余额与模型运行 `连接DSH.command`。Windows 从托盘连接 DSH。无需安装开发工具。
 

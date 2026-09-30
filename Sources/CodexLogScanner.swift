@@ -262,8 +262,9 @@ actor CodexLogScanner {
 
         if let totalObject = info["total_token_usage"] as? [String: Any],
            let reportedInput = int64(totalObject["input_tokens"]), let reportedOutput = int64(totalObject["output_tokens"]),
+           case let reportedTotal = int64(totalObject["total_tokens"]) ?? 0,
            reportedInput >= 0, reportedOutput >= 0,
-           reportedInput > 0 || reportedOutput > 0 || (int64(totalObject["total_tokens"]) ?? 0) == 0 {
+           reportedInput > 0 || reportedOutput > 0 || reportedTotal == 0 {
             // Codex fill_to_context_window emits a synthetic nonzero total with
             // zero input/output. It describes context exhaustion, not paid usage.
             let currentTotal = parseUsage(totalObject)
@@ -273,7 +274,7 @@ actor CodexLogScanner {
             }
             digest.previousTotal = currentTotal
             digest.latestTotal = digest.latestTotal + delta
-            digest.tokenUsageKnown = int64(totalObject["input_tokens"]) != nil && int64(totalObject["output_tokens"]) != nil
+            digest.tokenUsageKnown = true // Both nonnegative counters were validated above.
             digest.cacheUsageKnown = int64(totalObject["cached_input_tokens"]) != nil
             if digest.activeTurnID != nil {
                 digest.activeTaskUsage = digest.activeTaskUsage + delta
@@ -540,14 +541,17 @@ actor CodexLogScanner {
     }
 
     private func parseUsage(_ object: [String: Any]) -> TokenUsage {
-        TokenUsage(
-            inputTokens: max(0, int64(object["input_tokens"]) ?? 0),
-            cachedInputTokens: max(0, int64(object["cached_input_tokens"]) ?? 0),
-            outputTokens: max(0, int64(object["output_tokens"]) ?? 0),
-            reasoningOutputTokens: max(0, int64(object["reasoning_output_tokens"]) ?? 0),
-            totalTokens: max(0, int64(object["total_tokens"]) ?? ((int64(object["input_tokens"]) ?? 0) + (int64(object["output_tokens"]) ?? 0))),
-            cacheWriteInputTokens: max(0, int64(object["cache_write_input_tokens"]) ?? 0)
-        )
+        // Extract actor-local JSON values before operators with lazy autoclosures.
+        // Only Sendable scalar values are captured by the total fallback.
+        let input = max(0, int64(object["input_tokens"]) ?? 0)
+        let cached = max(0, int64(object["cached_input_tokens"]) ?? 0)
+        let output = max(0, int64(object["output_tokens"]) ?? 0)
+        let reasoning = max(0, int64(object["reasoning_output_tokens"]) ?? 0)
+        let total = max(0, int64(object["total_tokens"]) ?? (input + output))
+        let cacheWrite = max(0, int64(object["cache_write_input_tokens"]) ?? 0)
+        return TokenUsage(inputTokens: input, cachedInputTokens: cached,
+            outputTokens: output, reasoningOutputTokens: reasoning,
+            totalTokens: total, cacheWriteInputTokens: cacheWrite)
     }
 
     private func int64(_ value: Any?) -> Int64? {

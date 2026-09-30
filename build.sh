@@ -16,7 +16,7 @@ export CLANG_MODULE_CACHE_PATH="$build_cache/clang"
 export SWIFTPM_MODULECACHE_OVERRIDE="$build_cache/swiftpm"
 
 self_test="$build_cache/TokenLensScannerSelfTest"
-swiftc -sdk "$SDKROOT" -parse-as-library \
+swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
@@ -26,7 +26,7 @@ swiftc -sdk "$SDKROOT" -parse-as-library \
 "$self_test"
 
 island_test="$build_cache/TokenLensIslandSelfTest"
-swiftc -sdk "$SDKROOT" -parse-as-library \
+swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
@@ -39,7 +39,7 @@ swiftc -sdk "$SDKROOT" -parse-as-library \
 "$island_test"
 
 additional_test="$build_cache/TokenLensAdditionalSelfTest"
-swiftc -sdk "$SDKROOT" -parse-as-library \
+swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
@@ -49,7 +49,7 @@ swiftc -sdk "$SDKROOT" -parse-as-library \
 "$additional_test"
 
 dsh_metrics_test="$build_cache/TokenLensDeepSeekMetricsSelfTest"
-swiftc -sdk "$SDKROOT" -parse-as-library \
+swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
