@@ -1,6 +1,6 @@
 'use strict';
 const {contextBridge,ipcRenderer}=require('electron');
-const allowed=new Set(['details','open-assistant','connect-dsh','refresh','open-balance','close-details','select-gpt','select-dsh']);
+const allowed=new Set(['details','open-assistant','connect-dsh','refresh','open-balance','close-details','select-gpt','select-dsh','select-workbuddy','select-claude','select-codebuddy']);
 contextBridge.exposeInMainWorld('tokenLens',{
   onState(callback) { ipcRenderer.on('state',(_event,data)=>callback(data)); ipcRenderer.send('ready'); },
   onFrame(callback) { ipcRenderer.on('frame',(_event,data)=>callback(data)); },

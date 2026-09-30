@@ -19,8 +19,8 @@ export function apply(ctx) {
   let disposed = false, balanceInFlight = false, writeQueue = Promise.resolve()
   const status = { schemaVersion: 1, accountStatus: 'unknown', balanceStatus: 'unavailable',
     balance: [], bonusWallets: [], provider: null, model: null, modelLabel: null,
-    reasoningEffort: null, workspacePath: null, modelUpdatedAt: null, balanceUpdatedAt: null }
-  const client = { version: process.env.DSH_CLIENT_VERSION || '0.1.7-rc.2', locale: 'zh-CN',
+    reasoningEffort: null, workspacePath: null, modelUpdatedAt: null, balanceUpdatedAt: null, balanceFetchedAt: null, balanceAttemptedAt: null }
+  const client = { version: process.env.DSH_CLIENT_VERSION || '0.2.0-rc.2', locale: 'zh-CN',
     timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60 }
   function select(value) {
     if (typeof value?.model !== 'string' || typeof value?.provider !== 'string') return
@@ -57,10 +57,11 @@ export function apply(ctx) {
         status.balanceStatus = result?.status === 'ready' ? 'ready' : 'failed'
         if (result?.status === 'ready') {
           status.balance = wallets(result.value); status.bonusWallets = wallets(result.bonusWallets)
+          status.balanceFetchedAt = new Date().toISOString()
         }
       }
     } catch { status.balanceStatus = 'failed' }
-    finally { status.balanceUpdatedAt = new Date().toISOString(); balanceInFlight = false; await persist() }
+    finally { status.balanceAttemptedAt = new Date().toISOString(); status.balanceUpdatedAt = status.balanceFetchedAt; balanceInFlight = false; await persist() }
   }
   ctx.on('session/event', (session, event) => {
     // A delegated subtask must not replace the user's selected model.

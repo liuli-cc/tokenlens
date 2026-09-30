@@ -7,6 +7,7 @@ struct IslandSelfTest {
         try testGeometry()
         try testBodyCentering()
         try testCompactText()
+        try testAssistantPriority()
         try testSpring()
         try testDeepSeekEvents()
         try await testCompressedReader()
@@ -122,6 +123,30 @@ struct IslandSelfTest {
         var critical = IslandSpring(position: 0, target: 152, damping: 1)
         for _ in 0..<240 { critical.advance(by: 1 / 120); try check(critical.position <= 152, "Critical damping overshot") }
         try check(critical.isSettled, "Critical spring did not settle")
+    }
+
+    private static func testAssistantPriority() throws {
+        let all = Set(IslandAssistant.allCases)
+        for provider in IslandAssistant.allCases {
+            try check(IslandAssistant.selected(frontmost: provider, previous: .chatGPT, running: all) == provider,
+                      "Foreground provider did not take priority: \(provider)")
+            try check(IslandAssistant.selected(frontmost: nil, previous: provider, running: all) == provider,
+                      "Unrelated foreground app changed the selected provider")
+            for bundle in provider.bundleIdentifiers {
+                try check(IslandAssistant.matching(bundleIdentifier: bundle, bundlePath: nil, localizedName: nil) == provider,
+                          "Official bundle identifier was not recognized: \(bundle)")
+            }
+        }
+        try check(IslandAssistant.selected(frontmost: nil, previous: .chatGPT, running: [.claude]) == .claude,
+                  "Closing the active app did not select a running provider")
+        try check(IslandAssistant.selected(frontmost: nil, previous: .claude, running: []) == nil,
+                  "No assistants running should hide the island")
+        try check(IslandAssistant.matching(bundleIdentifier: "org.unrelated", bundlePath: "/Applications/Claude Notes.app", localizedName: "Claude Notes") == nil,
+                  "A similarly named unrelated app hijacked provider identity")
+        try check(IslandAssistant.matching(bundleIdentifier: "com.openai.chat", bundlePath: "/Applications/ChatGPT.app", localizedName: "ChatGPT") == nil,
+                  "Standalone ChatGPT accidentally displayed Codex usage")
+        try check(IslandAssistant.completionSource("CodeBuddy") == .codeBuddy && IslandAssistant.completionSource("untrusted") == nil,
+                  "Unknown completion sources bypassed provider gating")
     }
 
     private static func testDeepSeekEvents() throws {

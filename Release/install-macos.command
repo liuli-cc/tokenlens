@@ -28,5 +28,5 @@ cp "$installed_app/Contents/Resources/bridge.plist" "$agent_plist"
 chmod 600 "$agent_plist"
 /bin/launchctl bootstrap "gui/$(id -u)" "$agent_plist"
 /bin/launchctl kickstart -k "gui/$(id -u)/$service_label"
-print '已安装到 ~/Applications/TokenLens.app。打开 Codex / GPT 或 DeepSeek Harness 后，灵动岛自动出现。'
+print '已安装到 ~/Applications/TokenLens.app。打开 Codex / GPT、DeepSeek Harness、WorkBuddy、Claude 或 CodeBuddy 后，灵动岛自动出现。'
 print '第一次启动若被系统拦截，请在「系统设置 → 隐私与安全性」允许打开。'

@@ -97,7 +97,7 @@ actor CodexLogScanner {
     }
 
     private func updateCache(for url: URL, size: UInt64, modifiedAt: Date) throws -> CachedSession {
-        if var cached = cache[url], cached.size <= size {
+        if var cached = cache[url], cached.size < size || (cached.size == size && cached.modifiedAt == modifiedAt) {
             guard cached.size != size || cached.modifiedAt != modifiedAt else { return cached }
             try parseAppend(url: url, from: cached.size, into: &cached)
             cached.size = size
@@ -194,6 +194,7 @@ actor CodexLogScanner {
 
         if topLevelType == "turn_context" {
             if let model = payload["model"] as? String, !model.isEmpty {
+                if digest.currentModel != model { digest.contextWindow = 0; digest.contextUsedTokens = nil }
                 digest.currentModel = model
                 if digest.unattributedTokens > 0 {
                     let provider = digest.currentProvider.isEmpty ? "unknown" : digest.currentProvider
@@ -214,6 +215,7 @@ actor CodexLogScanner {
             digest.activeTurnID = nil
             digest.activeTaskStartedAt = nil
             digest.activeTaskUsage = .zero
+            digest.activeTaskUsageKnown = false
             digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
             return
         }
@@ -222,6 +224,7 @@ actor CodexLogScanner {
             digest.activeTurnID = payload["turn_id"] as? String
             digest.activeTaskStartedAt = dateFromEpoch(payload["started_at"]) ?? timestamp
             digest.activeTaskUsage = .zero
+            digest.activeTaskUsageKnown = false
             digest.activeTaskQuotaUsedPercent = digest.quota?.usedPercent
             digest.activeTaskQuotaResetAt = digest.quota?.resetsAt
             if let window = int64(payload["model_context_window"]), window > 0 {
@@ -231,23 +234,62 @@ actor CodexLogScanner {
             return
         }
 
-        guard eventType == "token_count",
-              let info = payload["info"] as? [String: Any] else { return }
+        guard eventType == "token_count" else { return }
+        // Quota-only notifications can have info=null. They must still refresh quota.
+        if let limits = payload["rate_limits"] as? [String: Any] {
+            func window(_ name: String) -> RateLimitWindow? {
+                guard let raw = limits[name] as? [String: Any],
+                      let used = double(raw["used_percent"]), used.isFinite,
+                      used >= 0, used <= 100 else { return nil }
+                return RateLimitWindow(usedPercent: used,
+                    windowMinutes: Int(int64(raw["window_minutes"]) ?? 0),
+                    resetsAt: dateFromEpoch(raw["resets_at"]), planType: limits["plan_type"] as? String)
+            }
+            digest.quota = window("primary")
+            digest.secondaryQuota = window("secondary")
+            digest.quotaEventAt = timestamp
+            digest.quotaLimitID = limits["limit_id"] as? String
+            digest.quotaLimitName = limits["limit_name"] as? String
+            if let timestamp, let quota = digest.quota {
+                digest.quotaSamples.append(QuotaSample(usedPercent: quota.usedPercent,
+                    resetsAt: quota.resetsAt, recordedAt: timestamp))
+            }
+        }
+        guard let info = payload["info"] as? [String: Any] else {
+            digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
+            return
+        }
 
-        if let totalObject = info["total_token_usage"] as? [String: Any] {
+        if let totalObject = info["total_token_usage"] as? [String: Any],
+           let reportedInput = int64(totalObject["input_tokens"]), let reportedOutput = int64(totalObject["output_tokens"]),
+           reportedInput >= 0, reportedOutput >= 0,
+           reportedInput > 0 || reportedOutput > 0 || (int64(totalObject["total_tokens"]) ?? 0) == 0 {
+            // Codex fill_to_context_window emits a synthetic nonzero total with
+            // zero input/output. It describes context exhaustion, not paid usage.
             let currentTotal = parseUsage(totalObject)
             var delta = currentTotal - digest.previousTotal
             if currentTotal.totalTokens < digest.previousTotal.totalTokens {
                 delta = currentTotal
             }
             digest.previousTotal = currentTotal
-            digest.latestTotal = currentTotal
+            digest.latestTotal = digest.latestTotal + delta
+            digest.tokenUsageKnown = int64(totalObject["input_tokens"]) != nil && int64(totalObject["output_tokens"]) != nil
+            digest.cacheUsageKnown = int64(totalObject["cached_input_tokens"]) != nil
             if digest.activeTurnID != nil {
                 digest.activeTaskUsage = digest.activeTaskUsage + delta
+                digest.activeTaskUsageKnown = digest.activeTaskUsageKnown || delta.totalTokens > 0
             }
 
             if let timestamp {
                 let day = Calendar.current.startOfDay(for: timestamp)
+                if delta.totalTokens > 0 {
+                    let identity = ModelIdentity(provider: digest.currentProvider.isEmpty ? "unknown" : digest.currentProvider,
+                        model: digest.currentModel.isEmpty ? "未知模型" : digest.currentModel, source: "Codex")
+                    // Forked transcripts copy their ancestor events. Fingerprint the actual
+                    // token notification (timestamp + counters), not the copied session ID.
+                    let fingerprint = "\(timestamp.timeIntervalSince1970)|\(identity.provider)|\(currentTotal.inputTokens)|\(currentTotal.cachedInputTokens)|\(currentTotal.outputTokens)|\(currentTotal.totalTokens)"
+                    digest.samples.append(TokenSample(id: fingerprint, day: day, at: timestamp, usage: delta, model: identity))
+                }
                 digest.dailyUsage[day, default: .zero] = digest.dailyUsage[day, default: .zero] + delta
                 if digest.currentModel.isEmpty {
                     digest.unattributedTokens += delta.totalTokens
@@ -261,29 +303,10 @@ actor CodexLogScanner {
 
         if let lastObject = info["last_token_usage"] as? [String: Any] {
             digest.lastCall = parseUsage(lastObject)
+            digest.contextUsedTokens = int64(lastObject["total_tokens"])
         }
         if let window = int64(info["model_context_window"]), window > 0 {
             digest.contextWindow = window
-        }
-        if let limits = payload["rate_limits"] as? [String: Any],
-           let primary = limits["primary"] as? [String: Any],
-           let used = double(primary["used_percent"]) {
-            digest.quota = RateLimitWindow(
-                usedPercent: used,
-                windowMinutes: Int(int64(primary["window_minutes"]) ?? 0),
-                resetsAt: dateFromEpoch(primary["resets_at"]),
-                planType: limits["plan_type"] as? String
-            )
-            digest.quotaEventAt = timestamp
-            if let timestamp {
-                digest.quotaSamples.append(
-                    QuotaSample(
-                        usedPercent: used,
-                        resetsAt: digest.quota?.resetsAt,
-                        recordedAt: timestamp
-                    )
-                )
-            }
         }
         digest.latestTokenAt = timestamp
         digest.latestEventAt = maxDate(digest.latestEventAt, timestamp)
@@ -320,7 +343,8 @@ actor CodexLogScanner {
                 fallbackTitle: digest.currentConversationTitle,
                 model: digest.currentModel.nonEmpty ?? "未知模型",
                 provider: digest.currentProvider,
-                usage: digest.activeTaskUsage,
+                usage: digest.activeTurnID == turnID ? digest.activeTaskUsage : .zero,
+                usageKnown: digest.activeTurnID == turnID && digest.activeTaskUsageKnown,
                 quotaUsedPercent: quotaUsedPercent,
                 quotaEndUsedPercent: digest.quota?.usedPercent,
                 quotaResetAt: digest.quota?.resetsAt,
@@ -333,6 +357,7 @@ actor CodexLogScanner {
         digest.activeTaskQuotaUsedPercent = nil
         digest.activeTaskQuotaResetAt = nil
         digest.activeTaskUsage = .zero
+        digest.activeTaskUsageKnown = false
         digest.latestEventAt = maxDate(digest.latestEventAt, completedAt ?? timestamp)
     }
 
@@ -340,22 +365,10 @@ actor CodexLogScanner {
         for completion: RawTaskCompletion,
         across digests: [SessionDigest]
     ) -> Double? {
-        if let taskLocalDelta = completion.quotaUsedPercent {
-            return taskLocalDelta
-        }
-        guard let resetAt = completion.quotaResetAt else { return nil }
-        let baseline = digests
-            .flatMap(\.quotaSamples)
-            .filter { sample in
-                sample.recordedAt <= completion.startedAt && sample.resetsAt == resetAt
-            }
-            .max { $0.recordedAt < $1.recordedAt }
-        return QuotaDeltaCalculator.delta(
-            startUsedPercent: baseline?.usedPercent,
-            startResetAt: baseline?.resetsAt,
-            endUsedPercent: completion.quotaEndUsedPercent,
-            endResetAt: completion.quotaResetAt
-        )
+        // Quota is shared by the account, including other computers. A before/after
+        // percentage is not attributable to this task, even if no local overlap exists.
+        // Keep the completion value unavailable instead of presenting a billing claim.
+        return nil
     }
 
     private func makeSnapshot(
@@ -371,26 +384,30 @@ actor CodexLogScanner {
     ) -> UsageSnapshot {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
-        let active = digests.max {
+        let active = digests.filter(\.isUserThread).max {
             ($0.latestEventAt ?? .distantPast) < ($1.latestEventAt ?? .distantPast)
         }
         let quotaDigest = digests
-            .filter { $0.quota != nil }
+            .filter { $0.quota != nil || $0.secondaryQuota != nil }
             .max { ($0.quotaEventAt ?? .distantPast) < ($1.quotaEventAt ?? .distantPast) }
 
         var dayTotals: [Date: TokenUsage] = [:]
         var modelTotals: [ModelIdentity: Int64] = [:]
         var sessionsToday = 0
+        var modelRequests: [ModelIdentity: Int] = [:]
+        var seenSamples = Set<String>()
+        var recentRequests = 0
 
         for digest in digests {
             if digest.dailyUsage[today]?.totalTokens ?? 0 > 0 {
                 sessionsToday += 1
             }
-            for (day, usage) in digest.dailyUsage where day >= historyStart && day <= today {
-                dayTotals[day, default: .zero] = dayTotals[day, default: .zero] + usage
-            }
-            for (identity, tokens) in digest.modelTotals {
-                modelTotals[identity, default: 0] += tokens
+            for sample in digest.samples where sample.day >= historyStart && sample.day <= today {
+                guard seenSamples.insert(sample.id).inserted else { continue }
+                dayTotals[sample.day, default: .zero] = dayTotals[sample.day, default: .zero] + sample.usage
+                modelTotals[sample.model, default: 0] += sample.usage.totalTokens
+                modelRequests[sample.model, default: 0] += 1
+                recentRequests += 1
             }
         }
 
@@ -405,8 +422,9 @@ actor CodexLogScanner {
                 provider: displayProvider(identity.provider),
                 model: identity.model,
                 tokens: tokens,
-                requests: 0,
-                source: identity.source
+                requests: modelRequests[identity] ?? 0,
+                source: identity.source,
+                requestsKnown: true
             )
             models.append(usage)
         }
@@ -423,12 +441,20 @@ actor CodexLogScanner {
         }
         models.sort(by: modelUsageComesFirst)
 
+        let observedProvider = active?.currentProvider.lowercased() ?? "openai"
+        let officialSession = observedProvider == "openai" || observedProvider == "default" || observedProvider.contains("official")
         let activeCCProvider = ccSwitch.activeProvider.flatMap { provider -> String? in
             let normalized = provider.lowercased()
-            return (normalized == "default" || normalized.contains("official")) ? nil : provider
+            guard !officialSession, normalized != "default", normalized != "openai", !normalized.contains("official") else { return nil }
+            // Configuration alone is not evidence that the displayed session uses it.
+            let explicitMatch = normalized == observedProvider
+            let corroboratedCustom = observedProvider == "custom" && ccSwitch.usage.contains {
+                $0.provider.lowercased() == normalized && $0.model == active?.currentModel
+            }
+            return explicitMatch || corroboratedCustom ? provider : nil
         }
         let activeProvider = activeCCProvider ?? displayProvider(active?.currentProvider ?? "openai")
-        let activeSource = activeCCProvider == nil ? "Codex" : "CC Switch"
+        let activeSource = officialSession ? "Codex" : (activeCCProvider == nil ? "Codex 外部模型" : "CC Switch")
         let completionNotice = latestCompletion.map { completion in
             let providerIdentity = completion.provider.lowercased()
             let usesExternalModel = ccSwitch.taskCost != nil
@@ -449,7 +475,8 @@ actor CodexLogScanner {
                 quotaUsedPercent: usesExternalModel ? nil : completionQuotaUsedPercent,
                 costUSD: usesExternalModel ? ccSwitch.taskCost?.costUSD : nil,
                 startedAt: completion.startedAt,
-                completedAt: completion.completedAt
+                completedAt: completion.completedAt,
+                usageKnown: completion.usageKnown
             )
         }
 
@@ -460,7 +487,7 @@ actor CodexLogScanner {
             currentSessionUsage: active?.latestTotal ?? .zero,
             lastCallUsage: active?.lastCall ?? .zero,
             contextWindow: active?.contextWindow ?? 0,
-            quota: quotaDigest?.quota,
+            quota: officialSession ? quotaDigest?.quota : nil,
             providerBalance: activeCCProvider == nil ? nil : ccSwitch.providerBalance,
             providerRechargeURL: activeCCProvider == nil ? nil : ccSwitch.providerRechargeURL,
             dailyUsage: days,
@@ -470,7 +497,19 @@ actor CodexLogScanner {
             lastEventAt: active?.latestEventAt,
             filesObserved: filesObserved,
             latestCompletion: completionNotice,
-            isTaskRunning: digests.contains { $0.isUserThread && $0.activeTurnID != nil && now.timeIntervalSince($0.latestEventAt ?? .distantPast) < 600 }
+            isTaskRunning: digests.contains { $0.isUserThread && $0.activeTurnID != nil && now.timeIntervalSince($0.latestEventAt ?? .distantPast) < 600 },
+            tokenUsageKnown: digests.contains(where: \.tokenUsageKnown),
+            cacheUsageKnown: active?.cacheUsageKnown ?? false,
+            contextUsedTokens: active?.contextUsedTokens,
+            contextIsEstimate: true,
+            metricsSource: "Codex token_count · 本机日志",
+            metricsDiagnostic: "近期 Token 包含本机子任务；调用为已记录的用量事件，不包含未返回用量的失败请求。上下文按最近响应总量估算，后续工具消息和压缩变化可能未反映；日志配额是账号共享的采样值。",
+            metricsUpdatedAt: active?.latestTokenAt,
+            recentRequestCount: digests.contains(where: \.tokenUsageKnown) ? recentRequests : nil,
+            secondaryQuota: officialSession ? quotaDigest?.secondaryQuota : nil,
+            quotaUpdatedAt: officialSession ? quotaDigest?.quotaEventAt : nil,
+            quotaLimitID: officialSession ? quotaDigest?.quotaLimitID : nil,
+            quotaLimitName: officialSession ? quotaDigest?.quotaLimitName : nil
         )
     }
 
@@ -502,11 +541,12 @@ actor CodexLogScanner {
 
     private func parseUsage(_ object: [String: Any]) -> TokenUsage {
         TokenUsage(
-            inputTokens: int64(object["input_tokens"]) ?? 0,
-            cachedInputTokens: int64(object["cached_input_tokens"]) ?? 0,
-            outputTokens: int64(object["output_tokens"]) ?? 0,
-            reasoningOutputTokens: int64(object["reasoning_output_tokens"]) ?? 0,
-            totalTokens: int64(object["total_tokens"]) ?? 0
+            inputTokens: max(0, int64(object["input_tokens"]) ?? 0),
+            cachedInputTokens: max(0, int64(object["cached_input_tokens"]) ?? 0),
+            outputTokens: max(0, int64(object["output_tokens"]) ?? 0),
+            reasoningOutputTokens: max(0, int64(object["reasoning_output_tokens"]) ?? 0),
+            totalTokens: max(0, int64(object["total_tokens"]) ?? ((int64(object["input_tokens"]) ?? 0) + (int64(object["output_tokens"]) ?? 0))),
+            cacheWriteInputTokens: max(0, int64(object["cache_write_input_tokens"]) ?? 0)
         )
     }
 
@@ -583,16 +623,23 @@ private struct SessionDigest: Sendable {
     let url: URL
     var sessionID = ""
     var hasReadIdentity = false
-    var isUserThread = false
+    var isUserThread = true
     var currentModel = ""
     var currentProvider = "openai"
     var currentConversationTitle = ""
     var latestTotal: TokenUsage = .zero
+    var tokenUsageKnown = false
+    var cacheUsageKnown = false
+    var samples: [TokenSample] = []
     var previousTotal: TokenUsage = .zero
     var lastCall: TokenUsage = .zero
     var contextWindow: Int64 = 0
+    var contextUsedTokens: Int64?
     var quota: RateLimitWindow?
+    var secondaryQuota: RateLimitWindow?
     var quotaEventAt: Date?
+    var quotaLimitID: String?
+    var quotaLimitName: String?
     var quotaSamples: [QuotaSample] = []
     var latestTokenAt: Date?
     var latestEventAt: Date?
@@ -602,9 +649,18 @@ private struct SessionDigest: Sendable {
     var activeTurnID: String?
     var activeTaskStartedAt: Date?
     var activeTaskUsage: TokenUsage = .zero
+    var activeTaskUsageKnown = false
     var activeTaskQuotaUsedPercent: Double?
     var activeTaskQuotaResetAt: Date?
     var latestCompletion: RawTaskCompletion?
+}
+
+private struct TokenSample: Sendable {
+    let id: String
+    let day: Date
+    let at: Date
+    let usage: TokenUsage
+    let model: ModelIdentity
 }
 
 private struct RawTaskCompletion: Sendable {
@@ -615,6 +671,7 @@ private struct RawTaskCompletion: Sendable {
     let model: String
     let provider: String
     let usage: TokenUsage
+    let usageKnown: Bool
     let quotaUsedPercent: Double?
     let quotaEndUsedPercent: Double?
     let quotaResetAt: Date?
@@ -802,6 +859,23 @@ struct CCSwitchScanner: Sendable {
             return CCSwitchSnapshot()
         }
 
+        // Match CC Switch's canonical semantics: 0 legacy cache-read-inclusive,
+        // 1 full-input-inclusive, 2 cache-exclusive/fresh normalized rollups.
+        func tokenExpression(table: String, alias: String) -> String {
+            let hasSemantics = query("PRAGMA table_info(\(table));").contains { $0.count > 1 && $0[1] == "input_token_semantics" }
+            let input = "\(alias).input_tokens", read = "\(alias).cache_read_tokens", write = "\(alias).cache_creation_tokens"
+            let fresh: String
+            if hasSemantics {
+                fresh = "CASE WHEN \(alias).input_token_semantics=2 THEN \(input) WHEN \(alias).input_token_semantics=1 AND \(input)>=(\(read)+\(write)) THEN \(input)-\(read)-\(write) WHEN \(alias).input_token_semantics=0 AND \(input)>=\(read) THEN \(input)-\(read) ELSE \(input) END"
+            } else {
+                fresh = "CASE WHEN \(input)>=\(read) THEN \(input)-\(read) ELSE \(input) END"
+            }
+            return "((\(fresh)) + \(read) + \(write) + \(alias).output_tokens)"
+        }
+        let rollupTokens = tokenExpression(table: "usage_daily_rollups", alias: "r")
+        let logTokens = tokenExpression(table: "proxy_request_logs", alias: "l")
+        let hasDataSource = query("PRAGMA table_info(proxy_request_logs);").contains { $0.count > 1 && $0[1] == "data_source" }
+        let proxySourceFilter = hasDataSource ? "AND COALESCE(l.data_source, 'proxy')='proxy'" : ""
         let configuredSQL = """
         SELECT p.name,
                json_extract(m.value,'$.model'),
@@ -827,31 +901,32 @@ struct CCSwitchScanner: Sendable {
         let usageSQL = """
         SELECT COALESCE(p.name, r.provider_id),
                r.model,
-               SUM(r.input_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.output_tokens),
+               SUM(\(rollupTokens)),
                SUM(r.request_count)
         FROM usage_daily_rollups r
         LEFT JOIN providers p ON p.id=r.provider_id AND p.app_type=r.app_type
         WHERE r.app_type='codex'
           AND substr(r.provider_id, 1, 1) != '_'
-          AND r.date >= date('now','-30 day')
+          AND r.date >= date('now','localtime','-6 day')
         GROUP BY COALESCE(p.name, r.provider_id), r.model
-        ORDER BY SUM(r.input_tokens + r.cache_read_tokens + r.cache_creation_tokens + r.output_tokens) DESC;
+        ORDER BY SUM(\(rollupTokens)) DESC;
         """
         let liveUsageSQL = """
         SELECT COALESCE(p.name, l.provider_id),
                l.model,
-               SUM(l.input_tokens + l.cache_read_tokens + l.cache_creation_tokens + l.output_tokens),
+               SUM(\(logTokens)),
                COUNT(*)
         FROM proxy_request_logs l
         LEFT JOIN providers p ON p.id=l.provider_id AND p.app_type=l.app_type
         WHERE l.app_type='codex'
           AND substr(l.provider_id, 1, 1) != '_'
+          \(proxySourceFilter)
           AND (CASE
                 WHEN l.created_at > 100000000000 THEN l.created_at / 1000
                 ELSE l.created_at
-               END) >= CAST(strftime('%s','now','-30 day') AS INTEGER)
+               END) >= CAST(strftime('%s','now','localtime','start of day','-6 day','utc') AS INTEGER)
         GROUP BY COALESCE(p.name, l.provider_id), l.model
-        ORDER BY SUM(l.input_tokens + l.cache_read_tokens + l.cache_creation_tokens + l.output_tokens) DESC;
+        ORDER BY SUM(\(logTokens)) DESC;
         """
 
         let configured = query(configuredSQL).compactMap { columns -> ConfiguredModel? in
@@ -877,7 +952,8 @@ struct CCSwitchScanner: Sendable {
                 model: columns[1],
                 tokens: Int64(columns[2]) ?? 0,
                 requests: Int(columns[3]) ?? 0,
-                source: "CC Switch"
+                source: "CC Switch",
+                requestsKnown: true
             )
         }
         let activeCredentials = query(providerSQL).first.flatMap(ProviderCredentials.init(columns:))
@@ -900,6 +976,8 @@ struct CCSwitchScanner: Sendable {
         let start = Int64(window.startedAt.timeIntervalSince1970.rounded(.down))
         let end = Int64(window.completedAt.timeIntervalSince1970.rounded(.up))
         let model = sqlLiteral(window.model)
+        let hasSessionID = query("PRAGMA table_info(proxy_request_logs);").contains { $0.count > 1 && $0[1] == "session_id" }
+        let sessionFilter = hasSessionID ? "AND l.session_id='\(sqlLiteral(window.sessionID))'" : ""
         let sql = """
         SELECT COALESCE(p.name, l.provider_id),
                l.total_cost_usd,
@@ -909,30 +987,14 @@ struct CCSwitchScanner: Sendable {
         WHERE l.app_type='codex'
           AND substr(l.provider_id, 1, 1) != '_'
           AND COALESCE(l.data_source, 'proxy')='proxy'
+          \(sessionFilter)
           AND (l.model='\(model)' OR l.request_model='\(model)' OR l.pricing_model='\(model)')
           AND (CASE
                 WHEN l.created_at > 100000000000 THEN l.created_at / 1000
                 ELSE l.created_at
                END) BETWEEN \(start) AND \(end);
         """
-        var rows = query(sql)
-        if rows.isEmpty {
-            let fallbackSQL = """
-            SELECT COALESCE(p.name, l.provider_id),
-                   l.total_cost_usd,
-                   l.input_tokens + l.output_tokens + l.cache_read_tokens + l.cache_creation_tokens
-            FROM proxy_request_logs l
-            LEFT JOIN providers p ON p.id=l.provider_id AND p.app_type=l.app_type
-            WHERE l.app_type='codex'
-              AND substr(l.provider_id, 1, 1) != '_'
-              AND COALESCE(l.data_source, 'proxy')='proxy'
-              AND (CASE
-                    WHEN l.created_at > 100000000000 THEN l.created_at / 1000
-                    ELSE l.created_at
-                   END) BETWEEN \(start) AND \(end);
-            """
-            rows = query(fallbackSQL)
-        }
+        let rows = query(sql)
         guard !rows.isEmpty else { return nil }
 
         var providers = Set<String>()
@@ -1066,27 +1128,21 @@ private actor ProviderBalanceReader {
 
     func balance(for credentials: ProviderCredentials?) async -> ProviderBalance? {
         guard let credentials, credentials.isExternal else { return nil }
-        if let cached = cache[credentials.id],
+        let cacheKey = "\(credentials.id)|\(credentials.baseURL)|\(credentials.apiKey)"
+        if let cached = cache[cacheKey],
            Date().timeIntervalSince(cached.fetchedAt) < 45 {
             return cached.value
         }
 
         let result = await fetchOfficialBalance(credentials)
-        cache[credentials.id] = CachedBalance(value: result, fetchedAt: Date())
+        cache[cacheKey] = CachedBalance(value: result, fetchedAt: Date())
         return result
     }
 
     private func fetchOfficialBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
-        let identity = "\(credentials.name) \(credentials.baseURL)".lowercased()
-        if identity.contains("deepseek") {
-            return await requestDeepSeekBalance(credentials)
-        }
-        if identity.contains("kimi") || identity.contains("moonshot") {
-            return await requestKimiBalance(credentials)
-        }
-        if identity.contains("glm") || identity.contains("zhipu") || identity.contains("bigmodel") {
-            return await requestGLMBalance(credentials)
-        }
+        guard let base = URL(string: credentials.baseURL), base.scheme == "https", let host = base.host?.lowercased() else { return nil }
+        if host == "api.deepseek.com" { return await requestDeepSeekBalance(credentials) }
+        if ["api.moonshot.cn", "api.moonshot.ai"].contains(host) { return await requestKimiBalance(credentials) }
         return nil
     }
 
@@ -1113,19 +1169,6 @@ private actor ProviderBalanceReader {
         )
     }
 
-    private func requestGLMBalance(_ credentials: ProviderCredentials) async -> ProviderBalance? {
-        // GLM has no documented balance endpoint. Only surface a value if a
-        // compatible deployment explicitly returns one from its credit route.
-        guard let object = await requestJSON(path: "/user/credit", credentials: credentials) else { return nil }
-        let data = (object["data"] as? [String: Any]) ?? object
-        let candidates = ["available_balance", "balance", "credit", "total_balance"]
-        guard let value = candidates.compactMap({ numeric(data[$0]) }).first else { return nil }
-        return ProviderBalance(
-            amounts: [.init(currency: inferredCurrency(for: credentials), value: value)],
-            fetchedAt: Date()
-        )
-    }
-
     private func requestJSON(path: String, credentials: ProviderCredentials) async -> [String: Any]? {
         guard let url = balanceURL(baseURL: credentials.baseURL, path: path) else { return nil }
         var request = URLRequest(url: url)
@@ -1135,7 +1178,9 @@ private actor ProviderBalanceReader {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let session = URLSession(configuration: .ephemeral, delegate: BalanceRedirectBlocker(), delegateQueue: nil)
+            defer { session.invalidateAndCancel() }
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else { return nil }
             return try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1168,10 +1213,19 @@ private actor ProviderBalanceReader {
     }
 
     private func numeric(_ value: Any?) -> Double? {
-        if let value = value as? Double { return value }
-        if let value = value as? NSNumber { return value.doubleValue }
-        if let value = value as? String { return Double(value) }
-        return nil
+        let result: Double?
+        if let value = value as? Double { result = value }
+        else if let value = value as? NSNumber { result = value.doubleValue }
+        else if let value = value as? String { result = Double(value) }
+        else { result = nil }
+        return result.flatMap { $0.isFinite ? $0 : nil }
+    }
+}
+
+private final class BalanceRedirectBlocker: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
 

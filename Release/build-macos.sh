@@ -10,15 +10,20 @@ release_app="$release_package/TokenLens.app"
 release_build="$project_dir/.build/release-$release_arch"
 release_cache="$project_dir/.build/release-cache-$release_arch"
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+# CLT SDK 27 currently lacks the matching SwiftUI macro plugin; use the
+# installed SDK 26 when available. CI falls back to its supported system SDK.
+if [[ "$(xcrun --sdk macosx --show-sdk-version)" == 27* && -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk ]]; then
+  export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+fi
 export MACOSX_DEPLOYMENT_TARGET=14.0
 mkdir -p "$release_cache/clang" "$release_cache/swiftpm" "$release_package"
 export CLANG_MODULE_CACHE_PATH="$release_cache/clang"
 export SWIFTPM_MODULECACHE_OVERRIDE="$release_cache/swiftpm"
 
 cd "$project_dir"
-swift build --configuration release --disable-sandbox --scratch-path "$release_build" \
+swift build --build-system native --sdk "$SDKROOT" --configuration release --disable-sandbox --scratch-path "$release_build" \
   --triple "$release_arch-apple-macosx14.0"
-release_bin="$(swift build --configuration release --scratch-path "$release_build" \
+release_bin="$(swift build --build-system native --sdk "$SDKROOT" --configuration release --scratch-path "$release_build" \
   --triple "$release_arch-apple-macosx14.0" --show-bin-path)"
 mkdir -p "$release_app/Contents/MacOS" "$release_app/Contents/Helpers" "$release_app/Contents/Resources"
 cp "$release_bin/TokenLens" "$release_app/Contents/MacOS/TokenLens"

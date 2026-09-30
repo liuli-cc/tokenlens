@@ -37,7 +37,7 @@ class ProviderReader {
     if (!recharge) {
       try { const url=new URL(row.website); if (url.protocol==='https:') recharge=url.href; } catch {}
     }
-    this.cache={provider:row.name,balance:'暂不可读',recharge};
+    this.cache={provider:row.name,balance:'暂不可读',balanceKnown:false,balanceUpdatedAt:null,recharge};
     if (!endpoint || !row.apiKey) return this.cache;
     try {
       const response=await fetch(endpoint,{headers:{Authorization:`Bearer ${row.apiKey}`},signal:AbortSignal.timeout(5000),redirect:'error'});
@@ -45,7 +45,10 @@ class ProviderReader {
       const data=await response.json(); let wallet;
       if (kind==='deepseek' && data.is_available) wallet=data.balance_infos?.find(w=>w.currency==='CNY') || data.balance_infos?.[0];
       if (kind==='kimi' && data.data?.available_balance!=null) wallet={currency:'CNY',total_balance:data.data.available_balance};
-      if (wallet) this.cache.balance=walletLabel({currency:wallet.currency,balance:wallet.total_balance});
+      if (wallet && Number.isFinite(Number(wallet.total_balance))) {
+        this.cache.balance=walletLabel({currency:wallet.currency,balance:wallet.total_balance});
+        this.cache.balanceKnown=true;this.cache.balanceUpdatedAt=Date.now();
+      }
     } catch {}
     return this.cache;
   }

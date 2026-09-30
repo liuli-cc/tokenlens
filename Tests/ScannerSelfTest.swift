@@ -13,12 +13,16 @@ enum SelfTestFailure: Error, CustomStringConvertible {
 @main
 struct ScannerSelfTest {
     static func main() async throws {
+        try await testRepeatedUsageResetAndQuotaWindows()
         try await testDynamicModelAndMetrics()
         try await testIncrementalRefresh()
         try await testRunningAndAbortedLifecycle()
         try await testCompletionMetricsTitleAndSharedQuotaBaseline()
         try await testSubagentCompletionIsIgnored()
         try await testCCSwitchTaskCostSupportsSecondsAndMilliseconds()
+        try await testCCSwitchInputSemantics()
+        try await testConfiguredProviderDoesNotOverrideOfficialSession()
+        try await testOfficialQuotaDoesNotBindExternalSession()
         try testCompletionNoticeGate()
         try testQuotaDeltaCalculator()
         try testCompletionMetricFormatting()
@@ -28,6 +32,45 @@ struct ScannerSelfTest {
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         guard condition() else { throw SelfTestFailure.assertion(message) }
+    }
+
+    private static func testRepeatedUsageResetAndQuotaWindows() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date()
+        func event(_ type: String, _ payload: [String: Any], _ offset: Double) throws -> String {
+            let value: [String: Any] = ["type": type, "payload": payload, "timestamp": now.addingTimeInterval(offset).ISO8601Format()]
+            return String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        }
+        func token(_ total: Int64) -> [String: Any] {
+            let usage: [String: Any] = ["input_tokens": total * 8 / 10, "cached_input_tokens": total * 4 / 10, "output_tokens": total * 2 / 10, "total_tokens": total]
+            return ["type": "token_count", "info": ["total_token_usage": usage,
+                "last_token_usage": ["input_tokens": 80, "cached_input_tokens": 40, "output_tokens": 20, "total_tokens": 100], "model_context_window": 1000]]
+        }
+        let header = try event("session_meta", ["id": "root", "model_provider": "openai"], -10)
+        let model = try event("turn_context", ["model": "root-model"], -9)
+        let calls = try [(100, -8.0), (100, -7.0), (20, -6.0), (70, -5.0)].map { try event("event_msg", token(Int64($0.0)), $0.1) }
+        let reset = now.addingTimeInterval(3600).timeIntervalSince1970
+        let quota = try event("event_msg", ["type": "token_count", "info": NSNull(), "rate_limits": [
+            "primary": ["used_percent": 50, "window_minutes": 300, "resets_at": reset],
+            "secondary": ["used_percent": 80, "window_minutes": 10080, "resets_at": reset]]], -1)
+        try Data(([header, model] + calls + [quota]).joined(separator: "\n").appending("\n").utf8).write(to: root.appendingPathComponent("root.jsonl"))
+        let child = try event("session_meta", ["id": "child", "source": ["subagent": [:]]], -11)
+        let childModel = try event("turn_context", ["model": "child-model"], 0)
+        try Data(([child, header, model] + calls + [childModel]).joined(separator: "\n").appending("\n").utf8).write(to: root.appendingPathComponent("child.jsonl"))
+        let scanner = CodexLogScanner(sessionsRoot: root, ccSwitchScanner: CCSwitchScanner(databaseURL: root.appendingPathComponent("missing.db")))
+        let result = try await scanner.scan(now: now)
+        try expect(result.currentModel == "root-model", "subagent model replaced root model")
+        try expect(result.todayUsage.totalTokens == 170, "repeat/reset/copied usage was counted incorrectly")
+        try expect(result.currentSessionUsage.totalTokens == 170, "reset lost prior epoch usage")
+        try expect(result.recentRequestCount == 3, "recorded request count ignored duplicate totals")
+        try expect(result.contextPercent == 10, "context estimate used lifetime cumulative instead of latest response")
+        try expect(result.cacheHitPercent == 50, "session cache percent denominator incorrect")
+        try expect(result.effectiveQuota(now: now)?.remainingPercent == 20, "secondary bottleneck quota ignored")
+        try expect(result.effectiveQuota(now: now.addingTimeInterval(901)) == nil, "stale quota shown as current")
+        try expect(UsageSnapshot.empty.cacheHitPercent == nil, "unknown cache was represented as zero")
+        try expect(UsageSnapshot.empty.contextPercent == nil, "unknown context was represented as zero")
     }
 
     private static func testRechargeURLResolution() throws {
@@ -103,7 +146,7 @@ struct ScannerSelfTest {
         try expect(snapshot.lastCallUsage.totalTokens == 150, "last call size is incorrect")
         try expect(snapshot.contextWindow == 400_000, "dynamic context window is incorrect")
         try expect(abs(snapshot.cacheHitRate - 50) < 0.001, "cache hit rate is incorrect")
-        try expect(snapshot.quota?.remainingPercent == 62.5, "remaining quota is incorrect")
+        try expect(snapshot.quota == nil && snapshot.usesExternalModel, "External provider inherited an official quota")
         try expect(snapshot.dailyUsage.last?.usage.totalTokens == 250, "daily trend is incorrect")
         try expect(snapshot.modelUsage.first?.model == "future-codex-model-x", "model usage was not grouped")
     }
@@ -215,7 +258,7 @@ struct ScannerSelfTest {
         try expect(completion.usage.outputTokens == 50, "task output usage is incorrect")
         try expect(completion.usage.totalTokens == 250, "task total usage is incorrect")
         try expect(
-            abs((completion.quotaUsedPercent ?? -1) - 0.75) < 0.0001,
+            completion.quotaUsedPercent == nil,
             "shared quota baseline was not applied to the first task"
         )
     }
@@ -308,6 +351,86 @@ struct ScannerSelfTest {
             "CC Switch task cost did not combine seconds and milliseconds rows"
         )
         try expect(taskCost.providers == ["DeepSeek"], "CC Switch task provider is incorrect")
+    }
+
+    private static func testCCSwitchInputSemantics() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("cc-switch.db")
+        let sql = """
+        CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, settings_config TEXT, website_url TEXT, is_current INTEGER);
+        CREATE TABLE provider_endpoints (provider_id TEXT, app_type TEXT, url TEXT);
+        CREATE TABLE usage_daily_rollups (provider_id TEXT, app_type TEXT, model TEXT, input_tokens INTEGER, cache_read_tokens INTEGER, cache_creation_tokens INTEGER, output_tokens INTEGER, request_count INTEGER, date TEXT, input_token_semantics INTEGER);
+        CREATE TABLE proxy_request_logs (provider_id TEXT, app_type TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_creation_tokens INTEGER, created_at INTEGER, data_source TEXT, input_token_semantics INTEGER);
+        INSERT INTO proxy_request_logs VALUES ('external','codex','fixture',100,20,30,5,strftime('%s','now'),'proxy',0);
+        INSERT INTO proxy_request_logs VALUES ('external','codex','fixture',100,20,30,5,strftime('%s','now'),'proxy',1);
+        INSERT INTO proxy_request_logs VALUES ('external','codex','fixture',65,20,30,5,strftime('%s','now'),'proxy',2);
+        INSERT INTO proxy_request_logs VALUES ('external','codex','fixture',100000,20,30,5,strftime('%s','now'),'synthetic',1);
+        """
+        try runSQLite(database: database, sql: sql)
+        let snapshot = await CCSwitchScanner(databaseURL: database).scan()
+        try expect(snapshot.usage.first?.tokens == 365, "CC Switch cache-inclusive rows counted cache twice")
+        try expect(snapshot.usage.first?.requests == 3, "Imported or synthetic rows counted as real proxy calls")
+    }
+
+    private static func testConfiguredProviderDoesNotOverrideOfficialSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("cc-switch.db")
+        let sql = """
+        CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, settings_config TEXT, website_url TEXT, is_current INTEGER);
+        CREATE TABLE provider_endpoints (provider_id TEXT, app_type TEXT, url TEXT);
+        CREATE TABLE usage_daily_rollups (provider_id TEXT, app_type TEXT, model TEXT, input_tokens INTEGER, cache_read_tokens INTEGER, cache_creation_tokens INTEGER, output_tokens INTEGER, request_count INTEGER, date TEXT);
+        CREATE TABLE proxy_request_logs (provider_id TEXT, app_type TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_creation_tokens INTEGER, created_at INTEGER, data_source TEXT);
+        INSERT INTO providers VALUES ('external','codex','DeepSeek','{"auth":{"OPENAI_API_KEY":"fixture-only-not-a-real-key"}}','',1);
+        INSERT INTO provider_endpoints VALUES ('external','codex','https://unsupported.example.invalid');
+        """
+        try runSQLite(database: database, sql: sql)
+        let timestamp = Date().ISO8601Format()
+        let events: [[String: Any]] = [
+            ["type": "session_meta", "payload": ["id": "official", "model_provider": "openai"]],
+            ["type": "turn_context", "payload": ["model": "official-model"]],
+            ["type": "event_msg", "payload": ["type": "task_complete", "turn_id": "without-usage"]]
+        ]
+        let log = try events.map { raw in
+            var value = raw; value["timestamp"] = timestamp
+            return String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        }.joined(separator: "\n") + "\n"
+        try Data(log.utf8).write(to: root.appendingPathComponent("official.jsonl"))
+        let scanner = CodexLogScanner(sessionsRoot: root, ccSwitchScanner: CCSwitchScanner(databaseURL: database))
+        let result = try await scanner.scan()
+        try expect(result.currentProvider == "OpenAI" && result.currentSource == "Codex", "Stale configured provider overrode current official session")
+        try expect(result.providerBalance == nil, "Other provider balance was bound to an official session")
+        try expect(result.latestCompletion?.usageKnown == false, "Missing task usage was shown as measured zero")
+    }
+
+    private static func testOfficialQuotaDoesNotBindExternalSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date()
+        func line(_ type: String, _ payload: [String: Any], _ offset: Double) throws -> String {
+            String(decoding: try JSONSerialization.data(withJSONObject: ["type": type, "payload": payload,
+                "timestamp": now.addingTimeInterval(offset).ISO8601Format()]), as: UTF8.self)
+        }
+        let official = try [line("session_meta", ["id": "official", "model_provider": "openai"], -10),
+            line("turn_context", ["model": "official-model"], -9),
+            line("event_msg", ["type": "token_count", "info": NSNull(), "rate_limits": [
+                "primary": ["used_percent": 20, "window_minutes": 300, "resets_at": now.addingTimeInterval(3600).timeIntervalSince1970],
+                "secondary": ["used_percent": 40, "window_minutes": 10080, "resets_at": now.addingTimeInterval(3600).timeIntervalSince1970]]], -8)]
+        let external = try [line("session_meta", ["id": "external", "model_provider": "custom"], -2),
+            line("turn_context", ["model": "external-model"], -1)]
+        try Data(official.joined(separator: "\n").appending("\n").utf8).write(to: root.appendingPathComponent("official.jsonl"))
+        try Data(external.joined(separator: "\n").appending("\n").utf8).write(to: root.appendingPathComponent("external.jsonl"))
+        let scanner = CodexLogScanner(sessionsRoot: root, ccSwitchScanner: CCSwitchScanner(databaseURL: root.appendingPathComponent("missing.db")))
+        let result = try await scanner.scan(now: now)
+        try expect(result.currentModel == "external-model" && result.usesExternalModel, "External session identity was lost")
+        try expect(result.currentSource == "Codex 外部模型", "External session incorrectly claimed to use configured CC Switch")
+        try expect(result.quota == nil && result.secondaryQuota == nil && result.quotaUpdatedAt == nil,
+            "Old official quota leaked into an external session")
+        try expect(result.effectiveQuota(now: now) == nil && result.providerBalance == nil, "Unavailable external balance was fabricated")
     }
 
     private static func testCompletionNoticeGate() throws {

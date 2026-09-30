@@ -1,8 +1,8 @@
 {
   "name": "tokenlens-windows",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "private": true,
-  "description": "GPT and DeepSeek Harness Dynamic Island for Windows",
+  "description": "Five assistant Dynamic Islands with verified local usage metrics for Windows",
   "author": "TokenLens contributors",
   "license": "MIT",
   "main": "main.cjs",
@@ -12,19 +12,53 @@
     "smoke": "electron . --smoke-test",
     "build": "node build.cjs"
   },
-  "dependencies": { "fzstd": "0.1.1", "koffi": "3.3.1" },
-  "devDependencies": { "electron": "44.4.5", "electron-builder": "26.15.3" },
+  "dependencies": {
+    "fzstd": "0.1.1",
+    "koffi": "3.3.1"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
   "build": {
     "appId": "cn.liuli.tokenlens",
     "productName": "TokenLens",
-    "directories": { "output": "dist" },
-    "files": ["*.cjs", "*.html", "*.css", "lib/**", "assets/**", "package.json", "!node_modules/@koromix/**", "!build.cjs", "!prepare-native.cjs"],
-    "extraResources": [{ "from": "../Integration/tokenlens-dsh-status.mjs", "to": "tokenlens-dsh-status.mjs" },
-      { "from": "../LICENSE", "to": "LICENSE.txt" },
-      { "from": ".build/native/koffi", "to": "koffi" }],
-    "asarUnpack": ["node_modules/koffi/**"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "*.cjs",
+      "*.html",
+      "*.css",
+      "lib/**",
+      "assets/**",
+      "package.json",
+      "!node_modules/@koromix/**",
+      "!build.cjs",
+      "!prepare-native.cjs"
+    ],
+    "extraResources": [
+      {
+        "from": "../Integration/tokenlens-dsh-status.mjs",
+        "to": "tokenlens-dsh-status.mjs"
+      },
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": ".build/native/koffi",
+        "to": "koffi"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**"
+    ],
     "win": {
-      "target": ["nsis", "zip"],
+      "target": [
+        "nsis",
+        "zip"
+      ],
       "icon": "assets/icon.ico",
       "artifactName": "TokenLens-Windows-${arch}-${version}.${ext}"
     },
@@ -35,7 +69,10 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "installerLanguages": ["zh_CN", "en_US"],
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "displayLanguageSelector": true
     }
   }

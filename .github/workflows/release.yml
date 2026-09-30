@@ -110,4 +110,4 @@ jobs:
           cd ..
           gh release create "$tag" \
             release-out/TokenLens-*.exe release-out/TokenLens-*.zip release-out/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --title "TokenLens ${version} · GPT / DSH 灵动岛" --notes-file Release/RELEASE_NOTES.md
+            --target "$GITHUB_SHA" --title "TokenLens ${version} · 五款助手灵动岛" --notes-file Release/RELEASE_NOTES.md

@@ -6,6 +6,7 @@ struct TokenUsage: Equatable, Sendable {
     var outputTokens: Int64 = 0
     var reasoningOutputTokens: Int64 = 0
     var totalTokens: Int64 = 0
+    var cacheWriteInputTokens: Int64 = 0
 
     static let zero = TokenUsage()
 
@@ -15,7 +16,8 @@ struct TokenUsage: Equatable, Sendable {
             cachedInputTokens: max(0, lhs.cachedInputTokens - rhs.cachedInputTokens),
             outputTokens: max(0, lhs.outputTokens - rhs.outputTokens),
             reasoningOutputTokens: max(0, lhs.reasoningOutputTokens - rhs.reasoningOutputTokens),
-            totalTokens: max(0, lhs.totalTokens - rhs.totalTokens)
+            totalTokens: max(0, lhs.totalTokens - rhs.totalTokens),
+            cacheWriteInputTokens: max(0, lhs.cacheWriteInputTokens - rhs.cacheWriteInputTokens)
         )
     }
 
@@ -25,7 +27,8 @@ struct TokenUsage: Equatable, Sendable {
             cachedInputTokens: lhs.cachedInputTokens + rhs.cachedInputTokens,
             outputTokens: lhs.outputTokens + rhs.outputTokens,
             reasoningOutputTokens: lhs.reasoningOutputTokens + rhs.reasoningOutputTokens,
-            totalTokens: lhs.totalTokens + rhs.totalTokens
+            totalTokens: lhs.totalTokens + rhs.totalTokens,
+            cacheWriteInputTokens: lhs.cacheWriteInputTokens + rhs.cacheWriteInputTokens
         )
     }
 }
@@ -47,7 +50,9 @@ struct ProviderBalance: Equatable, Sendable {
         let value: Double
 
         var displayValue: String {
-            let valueText = String(format: "%.2f", value)
+            let magnitude = abs(value)
+            let digits = magnitude > 0 && magnitude < 0.01 ? min(8, max(4, Int(ceil(-log10(magnitude))) + 1)) : 2
+            let valueText = magnitude > 0 && magnitude < 0.00000001 ? (value < 0 ? ">-0.00000001" : "<0.00000001") : String(format: "%.*f", digits, value)
             switch currency.uppercased() {
             case "CNY", "RMB": return "¥\(valueText)"
             case "USD": return "$\(valueText)"
@@ -77,7 +82,9 @@ struct TaskCompletionNotice: Identifiable, Equatable, Sendable {
     let costUSD: Double?
     let startedAt: Date
     let completedAt: Date
+    var usageKnown = true
 
+    var usageDisplayValue: String { usageKnown ? usage.totalTokens.compactTokenString : "--" }
     var isDeepSeek: Bool { source == "DeepSeek Harness" }
 
     var usesExternalModel: Bool {
@@ -158,6 +165,7 @@ struct ModelUsage: Identifiable, Equatable, Sendable {
     let tokens: Int64
     let requests: Int
     let source: String
+    var requestsKnown: Bool = false
 
     var id: String { "\(source)|\(provider)|\(model)" }
 }
@@ -190,22 +198,57 @@ struct UsageSnapshot: Equatable, Sendable {
     var filesObserved: Int = 0
     var latestCompletion: TaskCompletionNotice? = nil
     var isTaskRunning = false
+    // Missing metadata is deliberately distinct from a measured zero.
+    var tokenUsageKnown = false
+    var cacheUsageKnown = false
+    var contextUsedTokens: Int64? = nil
+    var contextIsEstimate = true
+    var metricsSource = "未读取"
+    var metricsDiagnostic: String? = nil
+    var metricsUpdatedAt: Date? = nil
+    var recentRequestCount: Int? = nil
+    var secondaryQuota: RateLimitWindow? = nil
+    var quotaUpdatedAt: Date? = nil
+    var quotaLimitID: String? = nil
+    var quotaLimitName: String? = nil
+    var requestCountIsLowerBound = true
+
+    var cacheHitPercent: Double? {
+        guard cacheUsageKnown, currentSessionUsage.inputTokens > 0 else { return nil }
+        return min(100, max(0, Double(currentSessionUsage.cachedInputTokens) / Double(currentSessionUsage.inputTokens) * 100))
+    }
+
+    var contextPercent: Double? {
+        guard let contextUsedTokens, contextWindow > 0 else { return nil }
+        return min(100, max(0, Double(contextUsedTokens) / Double(contextWindow) * 100))
+    }
+
+    var cacheHitDisplayValue: String { cacheHitPercent?.oneDecimalPercent ?? "--" }
+    var contextDisplayValue: String {
+        guard let contextPercent else { return "--" }
+        return (contextIsEstimate ? "≈" : "") + contextPercent.oneDecimalPercent
+    }
+
+    /// Account quota is a sampled server report, never a token-derived estimate.
+    /// A reset that has already passed cannot imply the account has 100% left.
+    func effectiveQuota(now: Date = Date()) -> RateLimitWindow? {
+        guard let sampledAt = quotaUpdatedAt, now.timeIntervalSince(sampledAt) >= -5,
+              now.timeIntervalSince(sampledAt) <= 900 else { return nil }
+        return [quota, secondaryQuota].compactMap { $0 }
+            .filter { $0.resetsAt.map { $0 > now } ?? false }
+            .min { $0.remainingPercent < $1.remainingPercent }
+    }
+    var quotaDisplayValue: String { effectiveQuota()?.remainingPercent.oneDecimalPercent ?? "--" }
+    var tokenDisplayValue: String { tokenUsageKnown ? todayUsage.totalTokens.compactTokenString : "--" }
 
     static let empty = UsageSnapshot()
 
     var cacheHitRate: Double {
-        guard currentSessionUsage.inputTokens > 0 else { return 0 }
-        return min(100, max(0,
-            Double(currentSessionUsage.cachedInputTokens) /
-            Double(currentSessionUsage.inputTokens) * 100
-        ))
+        cacheHitPercent ?? 0
     }
 
     var contextUsedPercent: Double {
-        guard contextWindow > 0 else { return 0 }
-        return min(100, max(0,
-            Double(lastCallUsage.totalTokens) / Double(contextWindow) * 100
-        ))
+        contextPercent ?? 0
     }
 
     var todayUsage: TokenUsage {
@@ -213,7 +256,7 @@ struct UsageSnapshot: Equatable, Sendable {
     }
 
     var usesExternalModel: Bool {
-        currentSource == "CC Switch"
+        currentSource == "CC Switch" || currentSource == "Codex 外部模型"
     }
 
     var quotaMetricTitle: String {

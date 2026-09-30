@@ -64,7 +64,7 @@ test('DSH reports unreadable and signed-out states without invented balances',t=
   assert.equal(readDeepSeekStatus(file).balance,'未登录');
   fs.writeFileSync(file,JSON.stringify({accountStatus:'credential-stored',balanceStatus:'failed',balance:[{currency:'CNY',balance:'999'}]}));
   assert.equal(readDeepSeekStatus(file).balance,'暂不可读');
-  fs.writeFileSync(file,JSON.stringify({accountStatus:'credential-stored',balanceStatus:'ready',modelLabel:'DeepSeek-R1',balance:[{currency:'CNY',balance:'0.0012'}]}));
+  fs.writeFileSync(file,JSON.stringify({accountStatus:'credential-stored',balanceStatus:'ready',balanceUpdatedAt:new Date().toISOString(),modelLabel:'DeepSeek-R1',balance:[{currency:'CNY',balance:'0.0012'}]}));
   assert.equal(readDeepSeekStatus(file).balance,'¥0.0012');assert.equal(readDeepSeekStatus(file).model,'DeepSeek-R1');
   assert.equal(dataDirectory('win32',{APPDATA:'roaming'},'user'),path.join('roaming','TokenLens'));
 });
@@ -77,4 +77,41 @@ test('integration installer preserves settings and adds exactly one backed-up pl
   assert.equal(fs.readFileSync(patch+'.tokenlens-backup','utf8'),old);
   assert.equal(assistantForPath('C:\\Program Files\\Codex\\Codex.exe'),'gpt');
   assert.equal(assistantForPath('C:\\Apps\\DeepSeek Harness.exe'),'dsh');assert.equal(assistantForPath('C:\\Apps\\Code.exe'),null);
+});
+
+test('Codex repeat/reset/fork metadata and two quota windows retain honest metrics',t=>{
+  const root=fixture(t),now=Date.now(),file=path.join(root,'root.jsonl');
+  const headers=[event('session_meta',{id:'root',model_provider:'openai'},now-6000),event('turn_context',{model:'gpt-current'},now-5500)];
+  const calls=[event('event_msg',tokens(100),now-5000),event('event_msg',tokens(100),now-4500),event('event_msg',tokens(20),now-4000),event('event_msg',tokens(70),now-3500)];
+  const quota=event('event_msg',{type:'token_count',info:null,rate_limits:{primary:{used_percent:50,window_minutes:300,resets_at:Math.floor(now/1000)+3600},secondary:{used_percent:80,window_minutes:10080,resets_at:Math.floor(now/1000)+7200}}},now-1000);
+  fs.writeFileSync(file,[...headers,...calls,quota].join('\n')+'\n');
+  fs.writeFileSync(path.join(root,'child.jsonl'),[event('session_meta',{id:'child',source:{subagent:{}}},now-7000),...headers,...calls,event('turn_context',{model:'child-model'},now)].join('\n')+'\n');
+  const scanner=new CodexScanner(root),result=scanner.scan(now);
+  assert.equal(result.model,'gpt-current','Copied ancestor session_meta must not replace child identity');
+  assert.equal(result.todayTokens,170,'Cumulative repeats and copied history must count once; resets create a new epoch');
+  assert.equal(result.recentRequestCount,3);assert.equal(result.contextPercent,100/400000*100,'Context estimate must use the latest response, not lifetime cumulative usage');
+  assert.equal(result.cachePercent,50);assert.equal(result.remaining,20,'The most restrictive valid account window controls remaining');
+  assert.equal(result.secondaryQuota.remaining,20);
+  const stale=scanner.scan(now+901000);assert.equal(stale.remaining,null);assert.equal(stale.quota.remaining,null);assert.equal(stale.secondaryQuota.remaining,null);
+});
+test('DSH per-response usage includes read/write input, ignores inherited seed and avoids reasoning double count',()=>{
+  const usage={inputTokens:100,cacheReadTokens:200,cacheWriteTokens:50,outputTokens:40,totalTokens:390,reasoningTokens:20};
+  const lines=[{type:'session',version:4,delegationDepth:0,id:'one'},
+    {type:'assistant/message',seq:1,time:100,data:{usage}},
+    {type:'session/end-seed',seq:2,time:200,data:{}},
+    {type:'request/context',seq:3,time:300,data:{model:'dsh-current',provider:'deepseek',contextWindow:1000}},
+    {type:'assistant/message',seq:4,time:400,data:{usage,message:{source:{model:'dsh-current',provider:'deepseek'}}}},
+    {type:'assistant/message',seq:4,time:400,data:{usage}}].map(x=>JSON.stringify(x)).join('\n');
+  const d=digestDeepSeek(lines);assert.equal(d.usage.total,390);assert.equal(d.usage.input,350);assert.equal(d.usage.cached,200);assert.equal(d.samples.length,1);assert.equal(d.context,1000);
+});
+test('DSH stale or failed balances hide both money and stale bonus',t=>{
+  const file=path.join(fixture(t),'status.json'),now=Date.now();
+  fs.writeFileSync(file,JSON.stringify({accountStatus:'credential-stored',balanceStatus:'ready',balanceUpdatedAt:new Date(now-181000).toISOString(),balance:[{currency:'CNY',balance:'9'}],bonusWallets:[{currency:'CNY',balance:'100'}]}));
+  assert.equal(readDeepSeekStatus(file,now).balance,'暂不可读');assert.equal(readDeepSeekStatus(file,now).bonus,'--');
+});
+
+test('synthetic Codex full-context notifications never inflate billed usage',t=>{
+  const root=fixture(t),file=path.join(root,'root.jsonl'),now=Date.now();
+  fs.writeFileSync(file,[event('event_msg',tokens(100),now-2000),event('event_msg',{type:'token_count',info:{total_token_usage:{input_tokens:0,output_tokens:0,total_tokens:400000},last_token_usage:{input_tokens:0,output_tokens:0,total_tokens:400000},model_context_window:400000}},now-1000)].join('\n')+'\n');
+  const result=new CodexScanner(root).scan(now);assert.equal(result.todayTokens,100);assert.equal(result.contextPercent,100);assert.equal(result.recentRequestCount,1);
 });

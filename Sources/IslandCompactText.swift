@@ -22,6 +22,9 @@ enum IslandCompactText {
             let detail = name.dropFirst(9).trimmingCharacters(in: .whitespacesAndNewlines)
             return .init(primary: "DeepSeek", secondary: detail.isEmpty ? nil : detail)
         }
+        if lower.hasPrefix("claude-") {
+            return .init(primary: "Claude", secondary: String(name.dropFirst(7)))
+        }
         let words = name.split(separator: " ", maxSplits: 1)
         if words.count == 2 {
             return .init(primary: String(words[0]), secondary: String(words[1]))

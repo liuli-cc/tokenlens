@@ -1,16 +1,15 @@
 'use strict';
 const path = require('node:path');
+const {ASSISTANTS,ASSISTANT_IDS,emptyRunning}=require('./assistants.cjs');
 
 function assistantForPath(executable) {
   const name = path.win32.basename(executable).toLowerCase();
-  if (['codex.exe','chatgpt.exe'].includes(name)) return 'gpt';
-  if (['deepseek harness.exe','deepseekharness.exe','deepseek-harness.exe','dsh.exe'].includes(name)) return 'dsh';
-  return null;
+  return ASSISTANT_IDS.find(id=>ASSISTANTS[id].executables.includes(name)) || null;
 }
 
 class NativeWindows {
   constructor() {
-    this.available=false; this.windows={gpt:[],dsh:[]}; this.cache=new Map();
+    this.available=false; this.windows=Object.fromEntries(ASSISTANT_IDS.map(id=>[id,[]])); this.cache=new Map();
     if (process.platform!=='win32') return;
     const koffi=require('koffi'), user=koffi.load('user32.dll'), kernel=koffi.load('kernel32.dll');
     this.foreground=user.func('void * __stdcall GetForegroundWindow()');
@@ -40,8 +39,8 @@ class NativeWindows {
     return executable;
   }
   poll() {
-    if (!this.available) return {frontmost:null,running:{gpt:false,dsh:false}};
-    const windows={gpt:[],dsh:[]};
+    if (!this.available) return {frontmost:null,running:emptyRunning()};
+    const windows=Object.fromEntries(ASSISTANT_IDS.map(id=>[id,[]]));
     this.enumWindows(hwnd=>{
       if (!this.visible(hwnd)) return 1;
       const exe=this.processOf(hwnd), assistant=exe && assistantForPath(exe);
@@ -50,7 +49,7 @@ class NativeWindows {
     },0);
     this.windows=windows;
     const exe=this.processOf(this.foreground());
-    return {frontmost:exe ? assistantForPath(exe):null,running:{gpt:!!windows.gpt.length,dsh:!!windows.dsh.length}};
+    return {frontmost:exe ? assistantForPath(exe):null,running:Object.fromEntries(ASSISTANT_IDS.map(id=>[id,!!windows[id].length]))};
   }
   activate(assistant) {
     const hwnd=this.windows[assistant]?.[0]; if (!hwnd) return false;

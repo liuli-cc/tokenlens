@@ -4,8 +4,10 @@ import Foundation
 @MainActor
 final class ChatGPTLifecycleBridge: NSObject {
     private let workspace = NSWorkspace.shared
-    private let chatGPTBundleIdentifier = "com.openai.codex"
-    private let deepSeekBundleIdentifier = "com.deepseek.dsh"
+    private let assistantBundleIdentifiers: Set<String> = [
+        "com.openai.codex", "com.deepseek.dsh", "com.workbuddy.workbuddy-ai",
+        "com.anthropic.claudefordesktop", "com.tencent.codebuddycn", "com.tencent.codebuddy"
+    ]
     private let tokenLensBundleIdentifier = "cn.liuli.tokenlens"
     private var synchronizationTimer: Timer?
 
@@ -45,7 +47,7 @@ final class ChatGPTLifecycleBridge: NSObject {
 
     private func synchronize() {
         let anAssistantIsRunning = workspace.runningApplications.contains {
-            isChatGPT($0) || isDeepSeek($0)
+            $0.bundleIdentifier.map { assistantBundleIdentifiers.contains($0) } ?? false
         }
         let tokenLensApplications = workspace.runningApplications.filter {
             $0.bundleIdentifier == tokenLensBundleIdentifier
@@ -58,14 +60,6 @@ final class ChatGPTLifecycleBridge: NSObject {
         } else {
             tokenLensApplications.forEach { $0.terminate() }
         }
-    }
-
-    private func isChatGPT(_ application: NSRunningApplication) -> Bool {
-        application.bundleIdentifier == chatGPTBundleIdentifier
-    }
-
-    private func isDeepSeek(_ application: NSRunningApplication) -> Bool {
-        application.bundleIdentifier == deepSeekBundleIdentifier
     }
 
     private func launchTokenLens() {

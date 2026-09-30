@@ -10,6 +10,9 @@ private final class PreviewDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--deepseek") { store.setActiveAssistant(.deepSeek) }
+        for assistant in IslandAssistant.allCases {
+            if CommandLine.arguments.contains("--\(assistant.rawValue.lowercased())") { store.setActiveAssistant(assistant) }
+        }
         let controller = IslandPanelController(store: store, onOpenDetails: {}, onOpenCurrentAssistant: {})
         self.controller = controller
         controller.start()
@@ -18,7 +21,7 @@ private final class PreviewDelegate: NSObject, NSApplicationDelegate {
             let notice = TaskCompletionNotice(
                 id: "preview-only", sessionID: "synthetic", turnID: "synthetic",
                 title: "动画预览 · 本地合成样例", provider: "Preview", model: "Preview",
-                source: self.store.activeAssistant == .deepSeek ? "DeepSeek Harness" : "Codex",
+                source: self.store.activeAssistant == .chatGPT ? "Codex" : self.store.activeAssistant.displayName,
                 usage: TokenUsage(inputTokens: 1000, outputTokens: 240, totalTokens: 1240),
                 quotaUsedPercent: 0, costUSD: nil, startedAt: Date().addingTimeInterval(-10), completedAt: Date()
             )

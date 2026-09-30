@@ -7,12 +7,18 @@ cd "$project_dir"
 build_cache="/tmp/tokenlens-build-cache"
 mkdir -p "$build_cache/clang" "$build_cache/swiftpm"
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+# CLT SDK 27 currently lacks the matching SwiftUI macro plugin; use the
+# installed SDK 26 when available. CI falls back to its supported system SDK.
+if [[ "$(xcrun --sdk macosx --show-sdk-version)" == 27* && -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk ]]; then
+  export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+fi
 export CLANG_MODULE_CACHE_PATH="$build_cache/clang"
 export SWIFTPM_MODULECACHE_OVERRIDE="$build_cache/swiftpm"
 
 self_test="$build_cache/TokenLensScannerSelfTest"
-swiftc -parse-as-library \
+swiftc -sdk "$SDKROOT" -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/CodexLogScanner.swift" \
   "$project_dir/Tests/ScannerSelfTest.swift" \
@@ -20,8 +26,9 @@ swiftc -parse-as-library \
 "$self_test"
 
 island_test="$build_cache/TokenLensIslandSelfTest"
-swiftc -parse-as-library \
+swiftc -sdk "$SDKROOT" -parse-as-library \
   -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/IslandGeometry.swift" \
   "$project_dir/Sources/IslandCompactText.swift" \
@@ -31,7 +38,28 @@ swiftc -parse-as-library \
   -o "$island_test"
 "$island_test"
 
-swift build -c release --disable-sandbox \
+additional_test="$build_cache/TokenLensAdditionalSelfTest"
+swiftc -sdk "$SDKROOT" -parse-as-library \
+  -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/AssistantIdentity.swift" \
+  "$project_dir/Sources/UsageModels.swift" \
+  "$project_dir/Sources/AdditionalAssistantReader.swift" \
+  "$project_dir/Tests/AdditionalTelemetrySelfTest.swift" \
+  -o "$additional_test"
+"$additional_test"
+
+dsh_metrics_test="$build_cache/TokenLensDeepSeekMetricsSelfTest"
+swiftc -sdk "$SDKROOT" -parse-as-library \
+  -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/AssistantIdentity.swift" \
+  "$project_dir/Sources/UsageModels.swift" \
+  "$project_dir/Sources/DeepSeekActivity.swift" \
+  "$project_dir/Sources/DeepSeekStatus.swift" \
+  "$project_dir/Tests/DeepSeekMetricsSelfTest.swift" \
+  -o "$dsh_metrics_test"
+"$dsh_metrics_test"
+
+swift build --build-system native --sdk "$SDKROOT" -c release --disable-sandbox \
   --cache-path "$build_cache/package-cache" \
   --config-path "$build_cache/config" \
   --security-path "$build_cache/security"

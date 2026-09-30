@@ -12,11 +12,12 @@
     <footer><button data-action="open-assistant" id="returnButton">↗ 返回 GPT</button><button data-action="details">用量详情</button></footer>
   </section>
 </main>
-<main id="dashboard" hidden><nav><div><span class="brand">TokenLens</span><span id="version"></span></div><div class="tabs"><button data-action="select-gpt" id="tabGPT">GPT</button><button data-action="select-dsh" id="tabDSH">DSH</button></div><button data-action="refresh">刷新</button></nav>
+<main id="dashboard" hidden><nav><div><span class="brand">TokenLens</span><span id="version"></span></div><div class="tabs" aria-label="选择助手"><button data-action="select-gpt" data-assistant="gpt">GPT</button><button data-action="select-dsh" data-assistant="dsh">DSH</button><button data-action="select-workbuddy" data-assistant="workbuddy">WorkBuddy</button><button data-action="select-claude" data-assistant="claude">Claude</button><button data-action="select-codebuddy" data-assistant="codebuddy">CodeBuddy</button></div><button data-action="refresh">刷新</button></nav>
   <section class="hero"><div><span class="eyebrow" id="detailProvider"></span><h1 id="detailModel"></h1><p id="detailState"></p></div><div class="quota"><strong id="detailMetric"></strong><span id="detailMetricLabel"></span></div></section>
   <section class="detailStats" id="detailStats"></section>
+  <section id="quotaWindows" class="quotaWindows" aria-label="额度窗口"></section>
   <section class="card" id="historyCard"><div class="cardHead"><h2>最近 7 天</h2><span>Token 用量</span></div><div id="history"></div></section>
   <section class="card" id="modelsCard"><h2>模型用量</h2><div id="models"></div></section>
   <section class="card" id="dshCard" hidden><h2>DeepSeek Harness 状态</h2><p id="dshHelp"></p><button class="primary" data-action="connect-dsh">连接状态桥</button><p class="muted">余额来自 Harness 账号接口；任务反馈来自本机任务记录。</p></section>
   <p id="dataNote" class="muted"></p>
-</main><script src="renderer.cjs"></script></body></html>
+</main><script src="lib/presentation.cjs"></script><script src="renderer.cjs"></script></body></html>

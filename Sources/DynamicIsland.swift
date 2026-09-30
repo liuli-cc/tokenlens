@@ -87,7 +87,7 @@ final class IslandPanelController: NSObject {
         store.$activeAssistant.removeDuplicates().sink { [weak self] _ in
             Task { @MainActor in
                 guard let self, let notice = self.viewModel.completionNotice,
-                      notice.isDeepSeek != (self.store.activeAssistant == .deepSeek) else { return }
+                      IslandAssistant.completionSource(notice.source) != self.store.activeAssistant else { return }
                 self.finishCompletionNotice(notice)
             }
         }.store(in: &cancellables)
@@ -191,7 +191,7 @@ final class IslandPanelController: NSObject {
 
     // This method is also exercised by the separate, explicitly synthetic preview.
     func presentCompletionNotice(_ notice: TaskCompletionNotice) {
-        guard notice.isDeepSeek == (store.activeAssistant == .deepSeek) else { return }
+        guard IslandAssistant.completionSource(notice.source) == store.activeAssistant else { return }
         completionTask?.cancel(); hoverTask?.cancel(); collapseTask?.cancel()
         viewModel.completionNotice = notice
         viewModel.completionRevealed = false
@@ -383,19 +383,18 @@ private struct DynamicIslandView: View {
     let onOpenDetails: () -> Void
     let onOpenCurrentAssistant: () -> Void
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
-    private var deepSeek: Bool { store.activeAssistant == .deepSeek }
-    private var accent: Color { deepSeek ? Color(red: 0.49, green: 0.64, blue: 1) : Color(red: 0.76, green: 0.57, blue: 1) }
+    private var data: UsageSnapshot { store.activeSnapshot }
+    private var accent: Color { Color(store.activeAssistant.palette.accent) }
     private var accentGradient: LinearGradient {
-        LinearGradient(colors: deepSeek
-            ? [Color(red: 0.36, green: 0.62, blue: 1), Color(red: 0.73, green: 0.53, blue: 1)]
-            : [Color(red: 0.66, green: 0.45, blue: 1), Color(red: 0.95, green: 0.65, blue: 0.96)],
+        LinearGradient(colors: [Color(store.activeAssistant.palette.start), Color(store.activeAssistant.palette.end)],
                        startPoint: .leading, endPoint: .trailing)
     }
-    private var model: String { deepSeek ? store.deepSeekStatus.modelName : store.snapshot.currentModel }
-    private var assistant: String { deepSeek ? "DeepSeek Harness" : "GPT" }
-    private var activity: Bool { deepSeek ? store.deepSeekActivity.isRunning : store.snapshot.isTaskRunning }
-    private var metric: String { deepSeek ? store.deepSeekStatus.balanceDisplayValue : (store.snapshot.usesExternalModel ? store.snapshot.balanceDisplayValue : store.snapshot.quota?.remainingPercent.oneDecimalPercent ?? "--") }
-    private var metricTitle: String { deepSeek ? "账户余额" : store.snapshot.quotaMetricTitle }
+    private var hasModel: Bool { !data.currentModel.hasPrefix("模型未") && !data.currentModel.hasPrefix("等待") }
+    private var model: String { hasModel ? data.currentModel : store.activeAssistant.displayName }
+    private var assistant: String { store.activeAssistant.displayName }
+    private var activity: Bool { data.isTaskRunning }
+    private var metric: String { store.activeMetricValue }
+    private var metricTitle: String { store.activeMetricTitle }
     private var crownShape: CrownShape { CrownShape(radius: max(0, viewModel.layout.bandHeight / 2 * (1 - min(1, viewModel.bodyHeight / 28)))) }
     private var bodyShape: IslandBodyShape {
         IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width)
@@ -408,7 +407,7 @@ private struct DynamicIslandView: View {
         }
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(viewModel.completionNotice != nil ? "任务完成，点击返回 \(assistant)" : "\(assistant) 灵动岛，\(activity ? "任务进行中" : "就绪")")
+        .accessibilityLabel(viewModel.completionNotice != nil ? "任务完成，点击返回 \(assistant)" : "\(assistant) 灵动岛，\(activity ? "任务进行中" : "未观察到进行中的任务")")
     }
 
     private var crownContent: some View {
@@ -441,8 +440,8 @@ private struct DynamicIslandView: View {
                 .padding(.horizontal, viewModel.layout.leftWing >= 50 ? 6 : 2)
                 .frame(width: viewModel.layout.leftWing, height: viewModel.layout.bandHeight)
                 .clipped().contentShape(Rectangle()).onHover(perform: onHover).onTapGesture(perform: onTap)
-                .help("当前模型：\(model)")
-                .accessibilityLabel("当前模型 \(model)，\(activity ? "任务进行中" : "就绪")")
+                .help("\(assistant) · 当前模型：\(data.currentModel)\n\(data.metricsSource)")
+                .accessibilityLabel("当前模型 \(data.currentModel)，\(activity ? "任务进行中" : "未观察到进行中的任务")")
                 Color.clear.frame(width: viewModel.layout.gapWidth).allowsHitTesting(false).accessibilityHidden(true)
                 Text(IslandCompactText.metric(metric, characterBudget: viewModel.layout.rightWing < 38 ? 4 : 7))
                     .font(.system(size: viewModel.layout.rightWing >= 42 ? 10.5 : 9, weight: .semibold, design: .rounded))
@@ -451,7 +450,7 @@ private struct DynamicIslandView: View {
                     .padding(.horizontal, viewModel.layout.rightWing >= 38 ? 3 : 1)
                     .frame(width: viewModel.layout.rightWing, height: viewModel.layout.bandHeight)
                     .clipped().contentShape(Rectangle()).onHover(perform: onHover).onTapGesture(perform: onTap)
-                    .help("\(metricTitle)：\(metric)")
+                    .help("\(metricTitle)：\(metric)\n\(store.activeMetricDetail)")
                     .accessibilityLabel("\(metricTitle) \(metric)")
             }
         }
@@ -483,7 +482,7 @@ private struct DynamicIslandView: View {
                 signal.frame(width: 24, height: 26)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model).font(.system(size: 13, weight: .semibold)).foregroundStyle(accentGradient).lineLimit(1)
-                    Text(activity ? "正在处理任务" : assistant)
+                    Text(activity ? "正在处理任务" : (hasModel ? assistant : "当前模型未读取"))
                         .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.58))
                 }
                 Spacer(minLength: 12)
@@ -493,31 +492,21 @@ private struct DynamicIslandView: View {
                 }
             }
             HStack(spacing: 12) {
-                if deepSeek {
-                    IslandMetric(title: "账号", value: store.deepSeekStatus.accountDisplayValue)
-                    IslandMetric(title: "赠金", value: store.deepSeekStatus.bonusDisplayValue)
-                    IslandMetric(title: "工作区", value: store.deepSeekStatus.workspaceName)
-                } else {
-                    IslandMetric(title: "今日 Token", value: store.snapshot.todayUsage.totalTokens.compactTokenString)
-                    IslandMetric(title: "上下文", value: store.snapshot.contextUsedPercent.oneDecimalPercent)
-                    IslandMetric(title: "缓存命中", value: store.snapshot.cacheHitRate.oneDecimalPercent)
-                }
+                IslandMetric(title: "今日 Token", value: data.tokenDisplayValue)
+                IslandMetric(title: data.contextIsEstimate && data.contextPercent != nil ? "上下文估算" : "上下文", value: data.contextDisplayValue)
+                IslandMetric(title: "缓存命中", value: data.cacheHitDisplayValue)
             }
+            .help(data.metricsDiagnostic ?? data.metricsSource)
             HStack(spacing: 12) {
                 Button(action: onOpenCurrentAssistant) { Label("返回 \(assistant)", systemImage: "arrow.up.right") }
                     .buttonStyle(IslandButtonStyle(accent: accent))
                 Spacer()
-                if !deepSeek {
-                    if let rechargeURL = store.snapshot.providerRechargeURL {
-                        Button("充值") { NSWorkspace.shared.open(rechargeURL) }
-                            .buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
-                            .help("打开当前 API 提供方的充值页面")
-                    }
-                    Button("用量详情", action: onOpenDetails).buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
-                } else {
-                    Text(store.deepSeekStatus.balanceUpdatedAt == nil ? "余额暂未同步" : "本地状态已同步")
-                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46))
+                if let rechargeURL = data.providerRechargeURL {
+                    Button("充值") { NSWorkspace.shared.open(rechargeURL) }
+                        .buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
+                        .help("打开当前 API 提供方的充值页面")
                 }
+                Button("用量详情", action: onOpenDetails).buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
             }
         }.padding(.horizontal, 23).padding(.top, 15).padding(.bottom, 14)
     }
@@ -533,10 +522,10 @@ private struct DynamicIslandView: View {
                     }
                 }
             } else {
-                Image(systemName: deepSeek ? "sparkle" : "waveform.path")
+                Image(systemName: store.activeAssistant.symbolName)
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(accentGradient)
             }
-        }.accessibilityLabel(activity ? "任务进行中" : "就绪")
+        }.accessibilityLabel(activity ? "任务进行中" : "未观察到进行中的任务")
     }
 
     private func completion(_ notice: TaskCompletionNotice) -> some View {
@@ -556,12 +545,18 @@ private struct DynamicIslandView: View {
                     Text("· \(assistant)").foregroundStyle(.white.opacity(0.45))
                 }.font(.system(size: 10.5, weight: .semibold))
                 Text(notice.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                Text(notice.isDeepSeek ? "已收到最终回复 · 点击返回查看" : "\(notice.usage.totalTokens.compactTokenString) Token · \(notice.secondaryMetricTitle) \(notice.secondaryMetricValue)")
+                Text(store.activeAssistant != .chatGPT ? "已收到完成事件 · 点击返回查看" : "\(notice.usageKnown ? notice.usageDisplayValue + " Token" : "计数未返回") · \(notice.secondaryMetricTitle) \(notice.secondaryMetricValue)")
                     .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
             }
             Spacer(minLength: 0)
             Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
         }.padding(.horizontal, 24).padding(.vertical, 14)
+    }
+}
+
+extension Color {
+    init(_ rgb: AssistantPalette.RGB) {
+        self.init(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 }
 

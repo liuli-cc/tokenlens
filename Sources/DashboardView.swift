@@ -1,13 +1,22 @@
 import AppKit
 import Charts
+import Combine
 import SwiftUI
 
 private enum TokenAccent {
-    static let color = Color(red: 0.76, green: 0.57, blue: 1)
-    static let gradient = LinearGradient(
-        colors: [Color(red: 0.66, green: 0.45, blue: 1), Color(red: 0.95, green: 0.65, blue: 0.96)],
-        startPoint: .bottomLeading, endPoint: .topTrailing
-    )
+    static func color(_ assistant: IslandAssistant) -> Color { adaptive(assistant.palette.accent) }
+    static func gradient(_ assistant: IslandAssistant) -> LinearGradient {
+        LinearGradient(colors: [adaptive(assistant.palette.start), adaptive(assistant.palette.end)],
+                       startPoint: .bottomLeading, endPoint: .topTrailing)
+    }
+    private static func adaptive(_ rgb: AssistantPalette.RGB) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let scale = dark ? 1.0 : 0.52
+            return NSColor(srgbRed: rgb.red * scale, green: rgb.green * scale,
+                           blue: rgb.blue * scale, alpha: 1)
+        })
+    }
 }
 
 struct DashboardView: View {
@@ -16,6 +25,8 @@ struct DashboardView: View {
     @Binding var appearance: String
     @State private var showingMethodology = false
     @State private var entrance = false
+
+    private var data: UsageSnapshot { store.activeSnapshot }
 
     private let refreshTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
@@ -27,9 +38,11 @@ struct DashboardView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     header
-                        .padding(.bottom, 26)
+                        .padding(.bottom, 18)
+                    dataStatus
+                        .padding(.bottom, 20)
 
-                    if let error = store.errorMessage, store.snapshot == .empty {
+                    if store.activeAssistant == .chatGPT, let error = store.errorMessage, data == .empty {
                         errorState(error)
                     } else {
                         dashboard
@@ -47,7 +60,7 @@ struct DashboardView: View {
         }
         .background(Color.tokenBackground)
         .foregroundStyle(Color.tokenInk)
-        .tint(TokenAccent.color)
+        .tint(TokenAccent.color(store.activeAssistant))
         .onReceive(refreshTimer) { _ in store.refresh() }
         .onAppear {
             if reduceMotion {
@@ -68,7 +81,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("TokenLens")
                     .font(.system(size: 17, weight: .semibold))
-                Text("Codex 本机用量助手")
+                Text("\(store.activeAssistant.displayName) 本机用量助手")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.tokenMuted)
             }
@@ -76,14 +89,14 @@ struct DashboardView: View {
             Spacer()
 
             HStack(spacing: 9) {
-                LiveIndicator(isActive: store.errorMessage == nil)
+                LiveIndicator(isActive: store.activeAssistant != .chatGPT || store.errorMessage == nil)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(store.snapshot.currentModel)
-                        .foregroundStyle(TokenAccent.gradient)
+                    Text(data.currentModel)
+                        .foregroundStyle(TokenAccent.gradient(store.activeAssistant))
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("\(store.snapshot.currentProvider)  ·  \(store.snapshot.currentSource)")
+                    Text("\(data.currentProvider)  ·  \(data.currentSource)")
                         .font(.system(size: 8.5, design: .monospaced))
                         .foregroundStyle(Color.tokenMuted)
                         .lineLimit(1)
@@ -133,6 +146,8 @@ struct DashboardView: View {
                 .offset(y: entrance ? 0 : 12)
                 .opacity(entrance ? 1 : 0.6)
 
+            quotaWindows
+
             HStack(alignment: .top, spacing: 16) {
                 trendPanel
                     .frame(maxWidth: .infinity)
@@ -143,22 +158,100 @@ struct DashboardView: View {
         }
     }
 
+    private var dataStatus: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
+                Text(data.metricsSource).fontWeight(.medium)
+                if let updated = data.metricsUpdatedAt {
+                    Text("数据时间 \(updated.formatted(date: .abbreviated, time: .shortened))")
+                }
+                Spacer()
+                Text(data.recentRequestCount.map {
+                    "\(recentCallRange) · 已记录 \(data.requestCountIsLowerBound ? "≥" : "")\($0) 次模型调用"
+                } ?? "\(recentCallRange) · 调用数未提供")
+            }
+            if let diagnostic = data.metricsDiagnostic {
+                Text(diagnostic).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.system(size: 11)).foregroundStyle(Color.tokenMuted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var recentCallRange: String {
+        switch store.activeAssistant {
+        case .chatGPT, .deepSeek: return "近 7 天"
+        case .workBuddy, .claude: return "近 24 小时"
+        case .codeBuddy: return "近期"
+        }
+    }
+
+    private var freshQuotaWindows: [RateLimitWindow] {
+        let now = Date()
+        // The timestamp check is shared with the primary metric; individual
+        // windows that have already reset are excluded instead of reused.
+        guard data.effectiveQuota(now: now) != nil else { return [] }
+        return [data.quota, data.secondaryQuota].compactMap { $0 }
+            .filter { $0.resetsAt.map { $0 > now } ?? false }
+    }
+
+    @ViewBuilder private var quotaWindows: some View {
+        if !freshQuotaWindows.isEmpty {
+            VStack(alignment: .leading, spacing: 9) {
+                if let name = data.quotaLimitName ?? data.quotaLimitID, !name.isEmpty {
+                    Text("账户限制：\(name)").font(.system(size: 11, weight: .medium))
+                }
+                HStack(alignment: .top, spacing: 28) {
+                    ForEach(Array(freshQuotaWindows.enumerated()), id: \.offset) { _, quota in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(quotaWindowTitle(quota)) · 剩余 \(quota.remainingPercent.oneDecimalPercent)")
+                                .font(.system(size: 11, weight: .medium)).monospacedDigit()
+                            if let reset = quota.resetsAt {
+                                Text("\(reset.formatted(date: .abbreviated, time: .shortened)) 重置")
+                                    .font(.system(size: 10)).foregroundStyle(Color.tokenMuted)
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if let at = data.quotaUpdatedAt {
+                    Text("服务器采样于 \(at.formatted(date: .omitted, time: .standard))")
+                        .font(.system(size: 10)).foregroundStyle(Color.tokenMuted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 2)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func quotaWindowTitle(_ quota: RateLimitWindow) -> String {
+        let minutes = quota.windowMinutes
+        if minutes >= 1_440, minutes % 1_440 == 0 { return "\(minutes / 1_440) 天窗口" }
+        if minutes >= 60, minutes % 60 == 0 { return "\(minutes / 60) 小时窗口" }
+        return minutes > 0 ? "\(minutes) 分钟窗口" : "额度窗口"
+    }
+
     private var heroMetrics: some View {
         HStack(spacing: 0) {
             QuotaMetric(
-                quota: store.snapshot.quota,
-                provider: store.snapshot.currentProvider,
-                usesExternalModel: store.snapshot.usesExternalModel,
-                balance: store.snapshot.providerBalance
+                value: store.activeMetricValue,
+                title: store.activeMetricTitle,
+                detail: store.activeMetricDetail,
+                percent: data.effectiveQuota()?.remainingPercent,
+                isBalance: store.activeAssistant == .deepSeek || data.usesExternalModel || data.providerBalance != nil
             )
                 .frame(maxWidth: .infinity)
 
             Hairline()
 
             ContextMetric(
-                current: store.snapshot.lastCallUsage.totalTokens,
-                window: store.snapshot.contextWindow,
-                percent: store.snapshot.contextUsedPercent
+                current: data.contextUsedTokens,
+                window: data.contextWindow,
+                percent: data.contextPercent,
+                display: data.contextDisplayValue,
+                isEstimate: data.contextIsEstimate
             )
             .frame(maxWidth: .infinity)
 
@@ -167,13 +260,13 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 24) {
                 FlatMetric(
                     label: "今日 TOKEN",
-                    value: store.snapshot.todayUsage.totalTokens.compactTokenString,
-                    detail: "\(store.snapshot.sessionsToday) 个会话"
+                    value: data.tokenDisplayValue,
+                    detail: data.tokenUsageKnown ? "\(data.sessionsToday) 个可观察会话" : "软件未提供可读取计数"
                 )
 
                 FlatMetric(
                     label: "缓存命中率",
-                    value: store.snapshot.cacheHitRate.oneDecimalPercent,
+                    value: data.cacheHitDisplayValue,
                     detail: "本会话 cached / input"
                 )
             }
@@ -195,22 +288,22 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("近 7 日使用趋势")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("输入、缓存与输出的实际日志计数")
+                    Text(data.tokenUsageKnown ? "可观察日志中的输入、缓存与输出计数" : "未取得可读取的 Token 计数")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.tokenMuted)
                 }
                 Spacer()
-                Text(store.snapshot.dailyUsage.reduce(0) { $0 + $1.usage.totalTokens }.compactTokenString)
+                Text(data.tokenUsageKnown ? data.dailyUsage.reduce(0) { $0 + $1.usage.totalTokens }.compactTokenString : "--")
                     .font(.system(size: 20, weight: .medium, design: .rounded))
                     .monospacedDigit()
             }
 
-            Chart(store.snapshot.dailyUsage) { item in
+            Chart(data.dailyUsage) { item in
                 BarMark(
                     x: .value("日期", item.date, unit: .day),
                     y: .value("Token", item.usage.totalTokens)
                 )
-                .foregroundStyle(TokenAccent.gradient)
+                .foregroundStyle(TokenAccent.gradient(store.activeAssistant))
                 .cornerRadius(4)
             }
             .chartXAxis {
@@ -235,14 +328,20 @@ struct DashboardView: View {
                 }
             }
             .frame(minHeight: 220)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.45), value: store.snapshot.dailyUsage)
+            .overlay {
+                if !data.tokenUsageKnown {
+                    Text("此软件暂未提供可读取的用量趋势")
+                        .font(.system(size: 12)).foregroundStyle(Color.tokenMuted)
+                }
+            }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.45), value: data.dailyUsage)
 
             HStack(spacing: 20) {
-                InlineStat(label: "输入", value: store.snapshot.todayUsage.inputTokens.compactTokenString)
-                InlineStat(label: "缓存", value: store.snapshot.todayUsage.cachedInputTokens.compactTokenString)
-                InlineStat(label: "输出", value: store.snapshot.todayUsage.outputTokens.compactTokenString)
+                InlineStat(label: "输入", value: data.tokenUsageKnown ? data.todayUsage.inputTokens.compactTokenString : "--")
+                InlineStat(label: "缓存", value: data.cacheUsageKnown ? data.todayUsage.cachedInputTokens.compactTokenString : "--")
+                InlineStat(label: "输出", value: data.tokenUsageKnown ? data.todayUsage.outputTokens.compactTokenString : "--")
                 Spacer()
-                if let updated = store.lastUpdated {
+                if let updated = data.metricsUpdatedAt {
                     Text("更新于 \(updated.formatted(date: .omitted, time: .standard))")
                         .font(.system(size: 10))
                         .foregroundStyle(Color.tokenMuted)
@@ -263,16 +362,16 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("模型动态")
                     .font(.system(size: 15, weight: .semibold))
-                Text("无需预置模型列表")
+                Text("最近 7 天 · 本机记录")
                     .font(.system(size: 11))
                     .foregroundStyle(Color.tokenMuted)
             }
 
-            if store.snapshot.modelUsage.isEmpty && store.snapshot.configuredModels.isEmpty {
+            if data.modelUsage.isEmpty && data.configuredModels.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "waveform.path.ecg")
                         .font(.system(size: 24, weight: .light))
-                    Text("开始一次 Codex 任务后将自动显示")
+                    Text("此软件产生可读取的模型计数后将显示")
                         .font(.system(size: 11))
                         .foregroundStyle(Color.tokenMuted)
                         .multilineTextAlignment(.center)
@@ -280,23 +379,25 @@ struct DashboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(store.snapshot.modelUsage.prefix(3).enumerated()), id: \.element.id) { index, item in
+                    ForEach(Array(data.modelUsage.prefix(3).enumerated()), id: \.element.id) { index, item in
                         ModelRow(
                             provider: item.provider,
                             model: item.model,
                             tokens: item.tokens,
+                            tokensKnown: data.tokenUsageKnown,
                             requests: item.requests,
+                            requestsKnown: item.requestsKnown,
                             source: item.source,
-                            isCurrent: item.model == store.snapshot.currentModel && item.provider == store.snapshot.currentProvider
+                            isCurrent: item.model == data.currentModel && item.provider == data.currentProvider
                         )
-                        if index < min(2, store.snapshot.modelUsage.count - 1) {
+                        if index < min(2, data.modelUsage.count - 1) {
                             Divider().overlay(Color.tokenLine)
                         }
                     }
                 }
             }
 
-            if !store.snapshot.configuredModels.isEmpty {
+            if !data.configuredModels.isEmpty {
                 Divider().overlay(Color.tokenLine)
                 VStack(alignment: .leading, spacing: 9) {
                     HStack {
@@ -305,11 +406,11 @@ struct DashboardView: View {
                             .tracking(0.5)
                             .foregroundStyle(Color.tokenMuted)
                         Spacer()
-                        Text("\(Set(store.snapshot.configuredModels.map(\.provider)).count) 个提供商")
+                        Text("\(Set(data.configuredModels.map(\.provider)).count) 个提供商")
                             .font(.system(size: 9))
                             .foregroundStyle(Color.tokenMuted)
                     }
-                    ForEach(store.snapshot.configuredModels.prefix(4)) { item in
+                    ForEach(data.configuredModels.prefix(4)) { item in
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.triangle.branch")
                                 .font(.system(size: 9))
@@ -332,7 +433,7 @@ struct DashboardView: View {
 
             HStack {
                 Image(systemName: "folder")
-                Text("\(store.snapshot.filesObserved) 个近期日志")
+                Text("\(data.filesObserved) 个近期日志")
                 Spacer()
                 Image(systemName: "lock.shield")
             }
@@ -351,9 +452,9 @@ struct DashboardView: View {
     private var privacyFooter: some View {
         HStack(spacing: 8) {
             Image(systemName: "lock")
-            Text("只读取 ~/.codex/sessions 中的计数与模型字段，对话正文不会进入仪表盘。")
+            Text("只提取各软件本机日志中的模型、计数和状态；对话正文不进入仪表盘。")
             Spacer()
-            if let error = store.errorMessage {
+            if store.activeAssistant == .chatGPT, let error = store.errorMessage {
                 Text(error)
                     .foregroundStyle(Color.tokenInk)
                     .lineLimit(1)
@@ -369,7 +470,7 @@ struct DashboardView: View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 30, weight: .light))
-            Text("暂时无法读取 Codex 用量")
+            Text("暂时无法读取 \(store.activeAssistant.displayName) 用量")
                 .font(.system(size: 17, weight: .semibold))
             Text(message)
                 .font(.system(size: 12))
@@ -386,106 +487,59 @@ struct DashboardView: View {
 }
 
 private struct QuotaMetric: View {
-    let quota: RateLimitWindow?
-    let provider: String
-    let usesExternalModel: Bool
-    let balance: ProviderBalance?
+    let value: String
+    let title: String
+    let detail: String
+    let percent: Double?
+    let isBalance: Bool
 
     var body: some View {
-        Group {
-            if usesExternalModel {
-                HStack(spacing: 20) {
-                    Text(balance?.displayValue ?? "不可读取")
-                        .font(.system(size: 27, weight: .semibold, design: .monospaced))
-                        .monospacedDigit()
-                        .frame(minWidth: 95, alignment: .leading)
-
-                    balanceDetails
-                }
+        HStack(spacing: 18) {
+            if isBalance {
+                Text(value)
+                    .font(.system(size: 25, weight: .semibold, design: .monospaced))
+                    .monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
+                    .frame(minWidth: 82, alignment: .leading)
             } else {
-                HStack(spacing: 20) {
-                    RingGauge(
-                        percent: quota?.remainingPercent ?? 0,
-                        center: quota?.remainingPercent.oneDecimalPercent ?? "--"
-                    )
-
-                    quotaDetails
-                }
+                RingGauge(percent: percent ?? 0, center: value)
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title).font(.system(size: 14, weight: .medium))
+                Text(detail).font(.system(size: 10)).foregroundStyle(Color.tokenMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 28)
-    }
-
-    private var balanceDetails: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(provider.uppercased())
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .tracking(0.6)
-                .foregroundStyle(Color.tokenMuted)
-            Text("余额")
-                .font(.system(size: 14, weight: .medium))
-            Text(balance == nil ? "未返回可读取的官方余额" : "通过官方余额接口读取")
-                .font(.system(size: 10))
-                .foregroundStyle(Color.tokenMuted)
-        }
-    }
-
-    private var quotaDetails: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("CHATGPT / CODEX")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                .tracking(0.6)
-                .foregroundStyle(Color.tokenMuted)
-            Text("共享额度剩余")
-                .font(.system(size: 14, weight: .medium))
-            if let quota {
-                Text(quotaDescription(quota))
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.tokenMuted)
-            } else {
-                Text("等待最新额度事件")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.tokenMuted)
-            }
-        }
-    }
-
-    private func quotaDescription(_ quota: RateLimitWindow) -> String {
-        let window = quota.windowMinutes >= 1_440
-            ? "\(quota.windowMinutes / 1_440) 天窗口"
-            : "\(max(1, quota.windowMinutes / 60)) 小时窗口"
-        guard let reset = quota.resetsAt else { return window }
-        return "\(window)  ·  \(reset.formatted(date: .abbreviated, time: .shortened)) 重置"
+        .padding(.horizontal, 24)
     }
 }
 
 private struct ContextMetric: View {
-    let current: Int64
+    let current: Int64?
     let window: Int64
-    let percent: Double
+    let percent: Double?
+    let display: String
+    let isEstimate: Bool
 
     var body: some View {
-        HStack(spacing: 20) {
-            RingGauge(percent: percent, center: percent.oneDecimalPercent)
-
+        HStack(spacing: 18) {
+            RingGauge(percent: percent ?? 0, center: display)
             VStack(alignment: .leading, spacing: 7) {
-                Text("当前上下文")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .tracking(0.6)
+                Text(isEstimate && percent != nil ? "上下文估算" : "当前上下文")
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.tokenMuted)
-                Text("\(current.compactTokenString) / \(window.compactTokenString)")
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
-                    .monospacedDigit()
-                Text("最近一次模型调用 / 动态窗口")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.tokenMuted)
+                Text("\(current?.compactTokenString ?? "--") / \(window > 0 ? window.compactTokenString : "--")")
+                    .font(.system(size: 14, weight: .medium, design: .monospaced)).monospacedDigit()
+                Text(percent == nil ? "未读取上下文长度或窗口" : (isEstimate ? "最近响应估算，未含后续工具消息/压缩变化" : "软件报告的当前长度 / 窗口"))
+                    .font(.system(size: 10)).foregroundStyle(Color.tokenMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 24)
     }
 }
 
 private struct RingGauge: View {
+    @EnvironmentObject private var store: UsageStore
     let percent: Double
     let center: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -498,7 +552,7 @@ private struct RingGauge: View {
             Circle()
                 .trim(from: 0, to: animatedPercent / 100)
                 .stroke(
-                    TokenAccent.gradient,
+                    TokenAccent.gradient(store.activeAssistant),
                     style: StrokeStyle(lineWidth: 7, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
@@ -521,6 +575,7 @@ private struct RingGauge: View {
 }
 
 private struct FlatMetric: View {
+    @EnvironmentObject private var store: UsageStore
     let label: String
     let value: String
     let detail: String
@@ -532,7 +587,7 @@ private struct FlatMetric: View {
                 .tracking(0.6)
                 .foregroundStyle(Color.tokenMuted)
             Text(value)
-                .foregroundStyle(TokenAccent.gradient)
+                .foregroundStyle(TokenAccent.gradient(store.activeAssistant))
                 .font(.system(size: 29, weight: .medium, design: .rounded))
                 .monospacedDigit()
                 .contentTransition(.numericText())
@@ -562,7 +617,9 @@ private struct ModelRow: View {
     let provider: String
     let model: String
     let tokens: Int64
+    let tokensKnown: Bool
     let requests: Int
+    let requestsKnown: Bool
     let source: String
     let isCurrent: Bool
 
@@ -587,9 +644,10 @@ private struct ModelRow: View {
                     .foregroundStyle(Color.tokenMuted)
             }
             Spacer()
-            Text(tokens.compactTokenString)
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(Color.tokenMuted)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(tokensKnown ? tokens.compactTokenString : "--").font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text(requestsKnown ? "\(requests) 次调用" : "调用数未提供").font(.system(size: 9))
+            }.foregroundStyle(Color.tokenMuted)
         }
         .padding(.vertical, 10)
     }
@@ -604,13 +662,14 @@ private struct Hairline: View {
 }
 
 private struct LiveIndicator: View {
+    @EnvironmentObject private var store: UsageStore
     let isActive: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var breathing = false
 
     var body: some View {
         Circle()
-            .fill(isActive ? TokenAccent.color : Color.tokenMuted)
+            .fill(isActive ? TokenAccent.color(store.activeAssistant) : Color.tokenMuted)
             .frame(width: 6, height: 6)
             .scaleEffect(breathing ? 1.25 : 0.85)
             .opacity(breathing ? 0.55 : 1)
@@ -625,10 +684,11 @@ private struct LiveIndicator: View {
 }
 
 private struct TokenLensMark: View {
+    @EnvironmentObject private var store: UsageStore
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(TokenAccent.gradient)
+                .fill(TokenAccent.gradient(store.activeAssistant))
             Image(systemName: "waveform.path.ecg")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.tokenBackground)
@@ -680,11 +740,11 @@ private struct MethodologyView: View {
             Text("指标口径")
                 .font(.system(size: 15, weight: .semibold))
 
-            MethodRow(title: "Token 消耗", detail: "Codex token_count 事件中的实际累计值。")
-            MethodRow(title: "额度 / 余额", detail: "官方模型显示 100% 减去 Codex 共享 agentic 窗口的 used_percent；外部模型仅显示提供商官方余额接口实际返回的金额。")
-            MethodRow(title: "缓存命中率", detail: "本会话 cached_input_tokens 除以 input_tokens。")
-            MethodRow(title: "当前长度", detail: "最近一次模型调用的 total_tokens，对比日志报告的动态上下文窗口。")
-            MethodRow(title: "CC Switch 外部模型", detail: "提供商与模型目录来自本机 CC Switch，近 30 日用量优先使用其代理请求日志。")
+            MethodRow(title: "Token 消耗", detail: "只汇总软件实际报告的使用计数。未取得数据时显示 --，不把日志行数或费用反推成 Token。")
+            MethodRow(title: "额度 / 余额", detail: "账户额度来自服务器返回值，多个限制窗口取最紧的一项；超过 15 分钟或已重置的样本不再显示。余额显示实际返回金额和采样时间。")
+            MethodRow(title: "缓存命中率", detail: "缓存读取 Token / 全部输入 Token；包含不同软件分别报告的未缓存、缓存读取与缓存写入。缺少分项时显示 --。")
+            MethodRow(title: "上下文", detail: "优先采用软件报告的当前长度。Codex/Harness 按最近响应估算并标为 ≈，后续工具消息和压缩变化可能尚未反映；缺少窗口时显示 --。")
+            MethodRow(title: "近期调用", detail: "只统计有唯一调用或响应 ID 的实际模型请求；重试、重复累计、配置变更和一般日志行不会算作新调用。")
 
             Divider()
 

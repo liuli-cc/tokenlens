@@ -7,6 +7,7 @@ const {Worker}=require('node:worker_threads');
 const {Spring,layout,contains}=require('./lib/geometry.cjs');
 const {CompletionGate}=require('./lib/scanner.cjs');
 const {NativeWindows}=require('./lib/native.cjs');
+const {ASSISTANTS,ASSISTANT_IDS,emptyRunning,emptyStatus,chooseAssistant}=require('./lib/assistants.cjs');
 const {installIntegration}=require('./lib/integration.cjs');
 
 const smoke=process.argv.includes('--smoke-test');
@@ -15,14 +16,22 @@ if (!smoke && !app.requestSingleInstanceLock()) { app.quit(); }
 else {
   let island,details,tray,worker,native,frame,displayId,workerTimer,motionTimer,foregroundTimer;
   let active='gpt', pinned=false, visible=true, lastHover=0, hover=false, completionUntil=0;
-  let status={gpt:{model:'等待 GPT',remaining:null,history:[],models:[],running:false},dsh:{model:'等待 Harness',balance:'--',bonus:'--',account:'等待账号数据',connected:false}};
-  let completion=null, running={gpt:false,dsh:false};
+  let status=emptyStatus();
+  let completion=null, running=emptyRunning();
   const pendingCompletions=new Map();
   const spring=new Spring(),gate=new CompletionGate();
   function chosenDisplay() { return screen.getAllDisplays().find(d=>d.id===displayId) || screen.getPrimaryDisplay(); }
   function state() { return {active,...status,completion,version:app.getVersion(),nativeAvailable:native?.available || false}; }
   function send() {
     for (const win of [island,details]) if (win && !win.isDestroyed()) win.webContents.send('state',state());
+  }
+  function markUnavailable(message) {
+    status=Object.fromEntries(ASSISTANT_IDS.map(id=>[id,{
+      ...emptyStatus()[id],model:status[id]?.model || ASSISTANTS[id].waiting,
+      metricsSource:status[id]?.metricsSource || '本机记录',error:message,
+      metricsDiagnostic:`${message}；等待重新读取，不沿用旧的额度、余额和计数。`
+    }]));
+    completion=null;send();
   }
   function showPending() {
     const pending=pendingCompletions.get(active);
@@ -50,8 +59,7 @@ else {
     const displays=screen.getAllDisplays();
     tray.setContextMenu(Menu.buildFromTemplate([
       {label:'查看用量详情',click:openDetails},
-      {label:'GPT 灵动岛',type:'radio',checked:active==='gpt',click:()=>{active='gpt';pinned=true;showPending();setVisible(true);send();buildMenu();}},
-      {label:'DSH 灵动岛',type:'radio',checked:active==='dsh',click:()=>{active='dsh';pinned=true;showPending();setVisible(true);send();buildMenu();}},
+      ...ASSISTANT_IDS.map(id=>({label:`${ASSISTANTS[id].name} 灵动岛`,type:'radio',checked:active===id,click:()=>{active=id;pinned=true;showPending();setVisible(true);send();buildMenu();}})),
       {label:'跟随正在使用的助手',type:'checkbox',checked:!pinned,click:()=>{pinned=false;pollForeground();buildMenu();}},
       {label:'显示器',submenu:displays.map((d,i)=>({label:`${d.label || `显示器 ${i+1}`} (${d.size.width} × ${d.size.height})`,type:'radio',checked:d.id===chosenDisplay().id,click:()=>{displayId=d.id;position();buildMenu();}}))},
       {type:'separator'},
@@ -67,9 +75,9 @@ else {
     try {
       const observation=native.poll(); running=observation.running;
       if (!pinned) {
-        const next=observation.frontmost || (running.dsh && !running.gpt?'dsh':running.gpt && !running.dsh?'gpt':active);
+        const next=chooseAssistant(active,observation);
         if (next!==active) { active=next;showPending();send();buildMenu(); }
-        setVisible(running.gpt || running.dsh || !native.available);
+        setVisible(Object.values(running).some(Boolean) || !native.available);
       }
     } catch { /* Keep the last known foreground state through transient failures. */ }
   }
@@ -102,12 +110,13 @@ else {
     if (name==='details') openDetails();
     else if (name==='close-details') details?.close();
     else if (name==='open-assistant') {
-      if (!native.activate(active) && !smoke) dialog.showMessageBox({type:'info',message:`请先打开 ${active==='gpt'?'Codex / GPT 桌面端':'DeepSeek Harness'}。`});
+      if (!native.activate(active) && !smoke) dialog.showMessageBox({type:'info',message:`请先打开 ${ASSISTANTS[active].appName}。`});
     } else if (name==='connect-dsh') await connectDeepSeek();
     else if (name==='refresh') worker?.postMessage('scan');
-    else if (name==='select-gpt' || name==='select-dsh') { active=name.slice(7);showPending();send();buildMenu(); }
+    else if (name.startsWith('select-') && ASSISTANTS[name.slice(7)]) { active=name.slice(7);showPending();send();buildMenu(); }
     else if (name==='open-balance') {
-      const link=active==='dsh'?'https://platform.deepseek.com/top_up':status.gpt.external?.recharge;
+      const link=active==='dsh'?'https://platform.deepseek.com/top_up':active==='gpt'?status.gpt.external?.recharge:null;
+      if (!link) { openDetails();return; }
       if (link) { try { if (new URL(link).protocol==='https:') await shell.openExternal(link); } catch {} }
     }
   }
@@ -119,9 +128,12 @@ else {
       // Exercise the shipped native DLL binding in the packaged executable.
       const nativeState=native.poll();
       assertion(process.platform!=='win32' || native.available,'Win32 foreground API did not load');
-      assertion(typeof nativeState.running.gpt==='boolean','Win32 window enumeration failed');
-      status={gpt:{model:'gpt-6-luna',remaining:26,contextPercent:23.4,cachePercent:89,todayTokens:64600000,running:true,history:[],models:[]},
-        dsh:{model:'DeepSeek-V41-Flash',balance:'¥25.80',bonus:'¥1.00',account:'已登录',connected:true}};
+      assertion(ASSISTANT_IDS.every(id=>typeof nativeState.running[id]==='boolean'),'Win32 window enumeration failed');
+      status={...emptyStatus(),gpt:{model:'gpt-6-luna',remaining:26,contextPercent:23.4,cachePercent:89,todayTokens:64600000,tokenUsageKnown:true,cacheUsageKnown:true,running:true,history:[],models:[]},
+        dsh:{model:'DeepSeek-V41-Flash',balance:'¥25.80',bonus:'¥1.00',account:'已登录',balanceFresh:true,connected:true},
+        workbuddy:{model:'reported-workbuddy-model',remaining:null,todayTokens:12000,tokenUsageKnown:true,cacheUsageKnown:true,cachePercent:50,contextPercent:null},
+        claude:{model:'模型未返回',remaining:null,tokenUsageKnown:false,contextPercent:null,cachePercent:null},
+        codebuddy:{model:'reported-codebuddy-model',remaining:null,todayTokens:36000,tokenUsageKnown:true,cacheUsageKnown:true,cachePercent:62.5,contextPercent:null}};
       active='gpt';spring.value=1;spring.target=1;position();send();
       await new Promise(resolve=>setTimeout(resolve,300));
       const gpt=await island.webContents.executeJavaScript('window.tokenLensView()');
@@ -133,13 +145,23 @@ else {
       const dsh=await island.webContents.executeJavaScript('window.tokenLensView()');
       assertion(dsh.metric==='¥25.80' && dsh.complete,'DSH balance/completion did not render');
       fs.writeFileSync(path.join(output,'windows-dsh.png'),(await island.webContents.capturePage()).toPNG());
-      fs.writeFileSync(path.join(output,'smoke.json'),JSON.stringify({passed:true,version:app.getVersion(),platform:process.platform,arch:process.arch,native:native.available,gpt,dsh},null,2));
+      const additional={};
+      completion=null;
+      for (const id of ['workbuddy','claude','codebuddy']) {
+        active=id;send();await new Promise(resolve=>setTimeout(resolve,150));
+        const view=await island.webContents.executeJavaScript('window.tokenLensView()');
+        assertion(view.model===(id==='claude'?'Claude · 模型未提供':status[id].model) && view.assistant===id && view.metric==='--' && view.symmetry,`${id} model/theme/unknown quota did not render`);
+        if (id==='claude') assertion(view.today==='--' && view.cache==='--','Claude missing metrics displayed as zero');
+        additional[id]=view;
+        fs.writeFileSync(path.join(output,`windows-${id}.png`),(await island.webContents.capturePage()).toPNG());
+      }
+      fs.writeFileSync(path.join(output,'smoke.json'),JSON.stringify({passed:true,version:app.getVersion(),platform:process.platform,arch:process.arch,native:native.available,gpt,dsh,...additional},null,2));
       app.exit(0);
     } catch(error) { fs.writeFileSync(path.join(output,'smoke.json'),JSON.stringify({passed:false,error:error.message}));app.exit(1); }
   }
   app.whenReady().then(()=>{
     app.setAppUserModelId('cn.liuli.tokenlens');
-    try { native=new NativeWindows(); } catch { native={available:false,poll:()=>({frontmost:null,running:{gpt:false,dsh:false}}),activate:()=>false}; }
+    try { native=new NativeWindows(); } catch { native={available:false,poll:()=>({frontmost:null,running:emptyRunning()}),activate:()=>false}; }
     frame=layout(chosenDisplay().workArea,0);
     island=new BrowserWindow({x:frame.x,y:frame.y,width:frame.width,height:frame.height,frame:false,transparent:true,
       backgroundColor:'#00000000',resizable:false,movable:false,focusable:false,skipTaskbar:true,show:false,hasShadow:false,
@@ -152,22 +174,22 @@ else {
     });
     if (!smoke) {
       tray=new Tray(nativeImage.createFromPath(path.join(__dirname,'assets','tray.png')));
-      tray.setToolTip('TokenLens · GPT / DSH 灵动岛');tray.on('double-click',openDetails);buildMenu();
+      tray.setToolTip('TokenLens · 五款助手灵动岛');tray.on('double-click',openDetails);buildMenu();
       worker=new Worker(path.join(__dirname,'scanner-worker.cjs'));
       worker.on('message',data=>{
-        if (data.error) return;
-        status=data;
-        for (const assistant of ['gpt','dsh']) {
-          if (gate.accept(assistant,status[assistant].completion)) {
+        if (data.error) {markUnavailable(data.error);return;}
+        status={...emptyStatus(),...data};
+        for (const assistant of ASSISTANT_IDS) {
+          if (gate.accept(assistant,status[assistant]?.completion)) {
             // Completion from a background assistant does not displace the
             // foreground island; retain it briefly until that assistant is used.
-            pendingCompletions.set(assistant,status[assistant].completion);
+            pendingCompletions.set(assistant,status[assistant]?.completion);
           }
         }
         showPending();
         send();
       });
-      worker.on('error',()=>{status.gpt.error='读取进程已停止，请从托盘退出后重新启动';send();});
+      worker.on('error',()=>markUnavailable('读取进程已停止，请从托盘退出后重新启动'));
       worker.postMessage('scan');workerTimer=setInterval(()=>worker.postMessage('scan'),2000);
       foregroundTimer=setInterval(pollForeground,500);
     }
