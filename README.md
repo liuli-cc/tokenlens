@@ -10,12 +10,12 @@ macOS 保留摄像头缺口融合、顶部隐藏区域悬停、菜单图标避�
 
 | 系统 | 对应版本 | 直接下载 |
 | --- | --- | --- |
-| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-macOS-arm64-3.1.1.zip) |
-| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-macOS-x86_64-3.1.1.zip) |
-| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-Windows-x64-3.1.1-Setup.exe) |
-| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-Windows-arm64-3.1.1-Setup.exe) |
-| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-Windows-x64-3.1.1.zip) |
-| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.1/TokenLens-Windows-arm64-3.1.1.zip) |
+| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-macOS-arm64-3.1.2.zip) |
+| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-macOS-x86_64-3.1.2.zip) |
+| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-Windows-x64-3.1.2-Setup.exe) |
+| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-Windows-arm64-3.1.2-Setup.exe) |
+| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-Windows-x64-3.1.2.zip) |
+| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.1.2/TokenLens-Windows-arm64-3.1.2.zip) |
 
 需要 macOS 14+ 或 Windows 10/11。安装包包含运行环境，使用者无需装开发工具。本项目暂未申请 Apple 公证或 Windows 签名证书，首次打开可能有系统提示。
 
