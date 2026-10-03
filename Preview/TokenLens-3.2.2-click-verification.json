@@ -1,0 +1,34 @@
+{
+  "version": "3.2.2",
+  "date": "2026-10-03",
+  "macOS": {
+    "coreSuitesPassed": 5,
+    "syntheticPointerRoutingCasesPassed": 23,
+    "syntheticScope": "CGEvent to NSEvent passed to the production routing method; no events posted",
+    "coverage": [
+      "camera center and edges",
+      "outside cutout and visible wings",
+      "mouse move, right click, drag and release ignored",
+      "five current assistants activate exactly once",
+      "DSH completion source takes priority over current GPT and dismisses notice",
+      "no-camera display does not activate"
+    ],
+    "installedVersion": "3.2.2",
+    "installedMatchesPortableBuild": true,
+    "signatureVerified": true,
+    "bridgeRunning": true,
+    "hardwareCameraClickVerified": false,
+    "hardwareVerificationLimit": "Mac was locked during attempted native UI verification",
+    "installedSHA256": {
+      "MacOS/TokenLens": "12cc2a301c489b0e523de8b97e1bb938313686f5961dd6ad44bace90dab89803",
+      "Helpers/TokenLensBridge": "102c07f2d2334ae80c42e8a328b4bcd286fa696737e88f723cf6a782427f7273",
+      "Helpers/zstd": "82178d9a058a9bd555e1810bc9f7eb239fa73476336be4032c44ec26e13d6017",
+      "Info.plist": "44e8f0e03fb9dfa0769e6bf8fbebe6b0662bafb3d51d1d424a57b16072ef0ce9"
+    }
+  },
+  "windows": {
+    "unitTestsPassed": 36,
+    "packagedRendererClickCheck": "Runs in Windows x64 release CI: current GPT, DSH completion origin, exactly one activation, metric details priority",
+    "ARM64HardwareVerified": false
+  }
+}

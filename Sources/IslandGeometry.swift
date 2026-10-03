@@ -47,6 +47,10 @@ struct IslandLayout: Equatable, Sendable {
 /// The compact island belongs to the camera/menu band. Menus take precedence:
 /// crowded wings shrink or disappear; the island never moves into the work area.
 enum IslandGeometry {
+    static func screenPoint(fromQuartz point: CGPoint, primaryScreen: CGRect) -> CGPoint {
+        CGPoint(x: point.x, y: primaryScreen.maxY - point.y)
+    }
+
     static func layout(screen: CGRect, safeTopInset: CGFloat, leftAux: CGRect?, rightAux: CGRect?,
                        menuBarHeight: CGFloat = 24, occupied: [CGRect] = [], conservativeWings: Bool = false) -> IslandLayout {
         let camera: CGRect?

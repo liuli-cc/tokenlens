@@ -220,8 +220,32 @@ else {
       completion=null;preferences.followSystemMotion=false;glowAssistant='dsh';glow=.20;send();position();await new Promise(resolve=>setTimeout(resolve,60));
       const fading=await island.webContents.executeJavaScript('window.tokenLensView()');
       assertion(fading.assistant==='gpt' && fading.glowAssistant==='dsh','Dismissed glow switched to the foreground colour during fade');
+      // Click through the shipped renderer and IPC instead of calling act():
+      // central crown content returns to its source, while the metric child
+      // retains its details action. Never activate a real app in this check.
+      const navigation={activationCalls:[],metricOpensDetails:false},realActivate=native.activate;
+      const waitFor=async(predicate,message)=>{
+        const deadline=Date.now()+3000;
+        while(!predicate()){assertion(Date.now()<deadline,message);await new Promise(resolve=>setTimeout(resolve,10));}
+      };
+      native.activate=source=>{navigation.activationCalls.push(source);return true;};
+      try {
+        active='gpt';spring.value=0;position();send();
+        await island.webContents.executeJavaScript("document.getElementById('tinyActivity').click()");
+        await waitFor(()=>navigation.activationCalls.length>0,'Central crown click did not reach the native return action');
+        assertion(navigation.activationCalls.length===1 && navigation.activationCalls[0]==='gpt','Central crown did not return to the selected assistant exactly once');
+        completion={id:'smoke-navigation',assistant:'dsh',at:Date.now(),title:'DeepSeek 已完成本轮任务'};send();
+        await island.webContents.executeJavaScript("document.getElementById('compactMetric').click()");
+        await waitFor(()=>details && !details.isDestroyed(),'Compact metric no longer opened details');
+        navigation.metricOpensDetails=true;
+        assertion(navigation.activationCalls.length===1 && completion?.assistant==='dsh','Metric details click bubbled into the crown return action');
+        details.close();await waitFor(()=>!details,'Details window did not close');
+        await island.webContents.executeJavaScript("document.querySelector('#tinyActivity i').click()");
+        await waitFor(()=>navigation.activationCalls.length>1,'Nested crown content did not reach the native return action');
+        assertion(navigation.activationCalls.length===2 && navigation.activationCalls[1]==='dsh' && active==='gpt' && !completion,'Completion crown did not return once to its real source and dismiss its notice');
+      } finally {native.activate=realActivate;if(details && !details.isDestroyed())details.close();}
       fs.writeFileSync(path.join(output,'smoke.json'),JSON.stringify({passed:true,version:app.getVersion(),platform:process.platform,arch:process.arch,native:native.available,gpt,dsh,...additional,
-        completionMotion:{nativeBounds,canvasChanges:canvasChanges-changesBefore,samples:motionViews,held,reduceMotion,fading,haloAcceptsClicks:false}},null,2));
+        navigation,completionMotion:{nativeBounds,canvasChanges:canvasChanges-changesBefore,samples:motionViews,held,reduceMotion,fading,haloAcceptsClicks:false}},null,2));
       app.exit(0);
     } catch(error) { fs.writeFileSync(path.join(output,'smoke.json'),JSON.stringify({passed:false,error:error.message}));app.exit(1); }
   }

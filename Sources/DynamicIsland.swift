@@ -147,12 +147,16 @@ final class IslandPanelController: NSObject {
         updateLayout(animated: false)
         crown.orderFrontRegardless()
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown]
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
-            Task { @MainActor in self?.pointerMoved() }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            // AppKit invokes both event monitors on the main thread. Handle the
+            // click synchronously, before the pointer or notice source changes.
+            MainActor.assumeIsolated { _ = self?.handlePointerEvent(event) }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
-            MainActor.assumeIsolated { self?.pointerMoved() }
-            return event
+            let handled = MainActor.assumeIsolated { self?.handlePointerEvent(event) ?? false }
+            // At the cutout boundary the wing can also receive the event.
+            // Consuming a handled local click prevents a second SwiftUI tap.
+            return handled ? nil : event
         }
         observe(NotificationCenter.default, NSApplication.didChangeScreenParametersNotification) { [weak self] in
             guard let self else { return }
@@ -314,6 +318,23 @@ final class IslandPanelController: NSObject {
         guard lastSampledPointer != point else { return }
         lastSampledPointer = point
         pointerMoved()
+    }
+    private func handlePointerEvent(_ event: NSEvent) -> Bool {
+        pointerMoved()
+        guard event.type == .leftMouseDown, crown.isVisible else { return false }
+        let point: CGPoint
+        if let mouseEvent = event.cgEvent, let primary = NSScreen.screens.first {
+            // Quartz events use the primary display's top-left origin. Convert
+            // the event snapshot, rather than reading a later cursor position.
+            point = IslandGeometry.screenPoint(fromQuartz: mouseEvent.location, primaryScreen: primary.frame)
+        } else if let window = event.window {
+            point = window.convertPoint(toScreen: event.locationInWindow)
+        } else {
+            point = event.locationInWindow
+        }
+        guard viewModel.layout.cameraContains(point) else { return false }
+        handleTap()
+        return true
     }
     private func pointerMoved() {
         let point = NSEvent.mouseLocation
@@ -493,6 +514,18 @@ final class IslandPanelController: NSObject {
     }
 
     #if TOKENLENS_PREVIEW
+    // Test-only access to the real routing method. Synthetic events are passed
+    // directly to it; they are never posted to the system event stream.
+    func previewHandlePointerEvent(_ event: NSEvent) -> Bool { handlePointerEvent(event) }
+    var previewCompletionNoticeID: String? { viewModel.completionNotice?.id }
+    func previewSetLayout(_ layout: IslandLayout) {
+        hoverTask?.cancel(); hoverTask = nil
+        collapseTask?.cancel(); collapseTask = nil
+        viewModel.layout = layout
+        crown.setFrame(layout.crownFrame, display: true)
+        crown.orderFrontRegardless()
+        updateTargets(animated: false)
+    }
     func previewStep(elapsed: Double, by delta: Double) {
         motionTimer?.invalidate(); motionTimer = nil
         completionTask?.cancel(); completionTask = nil

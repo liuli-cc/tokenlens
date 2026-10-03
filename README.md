@@ -2,7 +2,7 @@
 
 一个融合在屏幕顶部的助手状态岛。GPT 使用渐变紫，DeepSeek Harness 使用蓝紫，WorkBuddy 使用品牌青色，Claude 使用陶土橙，CodeBuddy 使用紫青色；胶囊显示当前模型与可读取的额度，悬停后展开详情。GPT / Harness 有明确任务完成事件时给出完成反馈。两端的动效、完成队列与外观设置见[灵动岛设计说明](docs/island-design.md)。
 
-macOS 保留摄像头缺口融合、顶部隐藏区域悬停与菜单图标避让。Windows 采用适合其屏幕与任务栏的顶部胶囊，支持实际前台助手切换、多个显示器和托盘设置。两端完成提醒都平稳展开、轻压回弹一次，并保留软件对应的柔和光边；原生窗口和正文保持稳定。
+macOS 保留摄像头缺口融合、顶部隐藏区域悬停、摄像头区域点击返回与菜单图标避让。Windows 采用适合其屏幕与任务栏的顶部胶囊，支持实际前台助手切换、多个显示器和托盘设置。两端完成提醒都平稳展开、轻压回弹一次，并保留软件对应的柔和光边；原生窗口和正文保持稳定。
 
 ## 直接下载
 
@@ -10,20 +10,20 @@ macOS 保留摄像头缺口融合、顶部隐藏区域悬停与菜单图标避�
 
 | 系统 | 对应版本 | 直接下载 |
 | --- | --- | --- |
-| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-macOS-arm64-3.2.1.zip) |
-| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-macOS-x86_64-3.2.1.zip) |
-| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-Windows-x64-3.2.1-Setup.exe) |
-| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-Windows-arm64-3.2.1-Setup.exe) |
-| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-Windows-x64-3.2.1.zip) |
-| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.1/TokenLens-Windows-arm64-3.2.1.zip) |
+| macOS · Apple M 系列 | 原生 arm64 | [Mac M 系列 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-macOS-arm64-3.2.2.zip) |
+| macOS · Intel | 原生 x86_64 | [Mac Intel ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-macOS-x86_64-3.2.2.zip) |
+| Windows · Intel / AMD | x64 安装版 | [Windows x64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-Windows-x64-3.2.2-Setup.exe) |
+| Windows · ARM / 骁龙 | ARM64 安装版 | [Windows ARM64 安装包](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-Windows-arm64-3.2.2-Setup.exe) |
+| Windows · Intel / AMD | x64 免安装版 | [Windows x64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-Windows-x64-3.2.2.zip) |
+| Windows · ARM / 骁龙 | ARM64 免安装版 | [Windows ARM64 ZIP](https://github.com/liuli-cc/tokenlens/releases/download/v3.2.2/TokenLens-Windows-arm64-3.2.2.zip) |
 
 需要 macOS 14+ 或 Windows 10/11。安装包包含运行环境，使用者无需装开发工具。本项目暂未申请 Apple 公证或 Windows 签名证书，首次打开可能有系统提示。
 
 ## 安装与使用
 
-Mac：解压 ZIP，双击 `安装.command`，安装到 `~/Applications/TokenLens.app` 并启用联动。打开 Codex / GPT、Harness、WorkBuddy、Claude 或 CodeBuddy 后自动显示灵动岛；全部关闭后自动隐藏。正在使用的助手优先显示，切到其他软件时保留最近使用的助手。悬停顶部展开，点击「返回」回到助手，点击「用量详情」看本机用量。
+Mac：解压 ZIP，双击 `安装.command`，安装到 `~/Applications/TokenLens.app` 并启用联动。打开 Codex / GPT、Harness、WorkBuddy、Claude 或 CodeBuddy 后自动显示灵动岛；全部关闭后自动隐藏。正在使用的助手优先显示，切到其他软件时保留最近使用的助手。悬停顶部展开，点击摄像头遮挡区域或「返回」回到助手，点击「用量详情」看本机用量。完成提醒显示时，返回的是这条提醒的来源助手。
 
-Windows：运行 `Setup.exe`，或完整解压免安装版后打开 `TokenLens.exe`。托盘菜单可以选择助手、跟随前台应用、选择显示器、连接 DSH 状态桥及开启开机启动。只把鼠标经过的黑色岛区域设为可交互，其余透明区域穿透点击。
+Windows：运行 `Setup.exe`，或完整解压免安装版后打开 `TokenLens.exe`。托盘菜单可以选择助手、跟随前台应用、选择显示器、连接 DSH 状态桥及开启开机启动。点击顶部中央或「返回」回到当前助手；完成提醒显示时回到提醒来源。右侧额度仍打开详情。只把鼠标经过的黑色岛区域设为可交互，其余透明区域穿透点击。
 
 DSH：先启动一次 DeepSeek Harness，再完全退出。Mac 运行 ZIP 内的 `连接DSH.command`；Windows 点击托盘的「连接 DeepSeek Harness 状态」。然后重新打开 Harness，自动同步余额，发送下一条消息后同步当前模型。插件适配 Harness 桌面 Cordis profile / v4 会话记录；上游格式更改时可能需要更新。连接前会备份已有插件和配置。
 

@@ -27,7 +27,14 @@ struct IslandSelfTest {
         try check(layout.camera?.width == 185 && layout.bandHeight == 33.5, "Physical notch dimensions were changed")
         try check(layout.crownFrame.maxY == screen.maxY && layout.crownFrame.height == 33.5, "Compact island detached from camera band")
         try check(layout.leftWing == 108 && layout.rightWing == 82, "Unexpected default wing sizes")
-        try check(!layout.crownContains(CGPoint(x: 855, y: 1090)), "Physical camera region accepts clicks")
+        try check(!layout.crownContains(CGPoint(x: 855, y: 1090)), "Camera cutout should stay outside visible-wing hit testing")
+        let cameraClick = IslandGeometry.screenPoint(fromQuartz: CGPoint(x: 855, y: 17), primaryScreen: screen)
+        try check(layout.cameraContains(cameraClick), "Quartz camera click did not convert to the AppKit camera region")
+        try check(layout.cameraContains(IslandGeometry.screenPoint(fromQuartz: CGPoint(x: 855, y: 0), primaryScreen: screen)), "Screen-top click missed the camera region")
+        try check(!layout.cameraContains(IslandGeometry.screenPoint(fromQuartz: CGPoint(x: 855, y: 34), primaryScreen: screen)), "Click below the cutout activated the assistant")
+        try check(!layout.cameraContains(IslandGeometry.screenPoint(fromQuartz: CGPoint(x: 760, y: 17), primaryScreen: screen)) &&
+                  !layout.cameraContains(IslandGeometry.screenPoint(fromQuartz: CGPoint(x: 950, y: 17), primaryScreen: screen)), "Camera click routing intercepted a visible wing")
+        try check(IslandGeometry.screenPoint(fromQuartz: CGPoint(x: -960, y: 1207), primaryScreen: screen) == CGPoint(x: -960, y: -100), "Secondary display click coordinates were clamped to the primary screen")
         for point in [CGPoint(x: 855, y: 1090), CGPoint(x: 855, y: 1107),
                       CGPoint(x: 762.5, y: 1107), CGPoint(x: 947.5, y: 1107)] {
             try check(layout.cameraContains(point) && layout.crownHoverContains(point), "Invisible camera cursor failed to trigger hover")

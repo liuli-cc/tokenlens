@@ -1,15 +1,17 @@
-TokenLens 3.2.1 · 五款助手灵动岛
+TokenLens 3.2.2 · 五款助手灵动岛
 
 Mac：macOS 14 或更高版本。Apple M 系列选择 arm64；Intel 选择 x86_64。
 解压后双击「安装.command」，安装到个人 Applications 目录并开启助手联动。
 打开 Codex / GPT 桌面端、DeepSeek Harness、WorkBuddy、Claude 或 CodeBuddy 后自动出现；移到屏幕顶部即可展开。
-GPT 使用紫色渐变；DSH 使用蓝紫色；WorkBuddy 青色、Claude 陶土橙、CodeBuddy 紫青色。顶部显示当前模型与额度/余额。
+GPT 使用紫色渐变；DSH 使用蓝紫色；WorkBuddy 青色、Claude 陶土橙、CodeBuddy 紫青色。顶部显示当前模型与额度/余额。点击摄像头遮挡区域或展开面板的「返回」可回到对应助手。
 要读取 Harness 余额与模型，先启动一次 Harness，再完全退出，运行「连接DSH.command」。
 
 Windows：Windows 10/11。普通 Intel / AMD 电脑选择 x64；骁龙等 Windows ARM 电脑选择 arm64。
 Setup.exe 是安装版；zip 是免安装版，解压完整目录后启动 TokenLens.exe。
 在托盘中可切换助手、选择显示器、连接 DSH 状态桥和开启「开机启动」。
-Windows 没有 Mac 的黑色摄像头缺口，因此胶囊贴合可用屏幕顶部，并避让顶部任务栏。
+Windows 没有 Mac 的黑色摄像头缺口，因此胶囊贴合可用屏幕顶部，并避让顶部任务栏。点击顶部中央可返回助手，右侧额度仍打开详情。
+
+完成提醒显示时，摄像头区域、顶部中央及「返回」都会打开这条提醒的来源助手。
 
 完成提醒：两端固定原生窗口，平稳展开后轻压回弹一次，软件对应的彩色光边在弹跳时亮起，停留时保留柔光。
 GPT / Codex、DeepSeek Harness 的明确新完成事件依次呈现，首次读取不重播历史。

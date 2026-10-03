@@ -1,11 +1,11 @@
-TokenLens 3.2.1 将完成提醒升级为平稳展开、一次轻压回弹和软件对应的边缘光。macOS 与 Windows 都保留五助手、真实前台切换、用量详情、任务栏或菜单避让及透明区域点击穿透。
+TokenLens 3.2.2 增加顶部区域点击返回。Mac 点击摄像头遮挡区域即可回到对应助手；Windows 点击顶部中央或其中的活动指示也可以返回。完成提醒显示时，打开的是该提醒的来源助手，右侧额度按钮继续打开详情。现有「返回」、五助手切换、用量详情、完成队列和果冻柔光效果保留。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Mac · Apple M 系列 | **TokenLens-macOS-arm64-3.2.1.zip** |
-| Mac · Intel | **TokenLens-macOS-x86_64-3.2.1.zip** |
-| Windows · Intel / AMD | **TokenLens-Windows-x64-3.2.1-Setup.exe** |
-| Windows · ARM / 骁龙 | **TokenLens-Windows-arm64-3.2.1-Setup.exe** |
+| Mac · Apple M 系列 | **TokenLens-macOS-arm64-3.2.2.zip** |
+| Mac · Intel | **TokenLens-macOS-x86_64-3.2.2.zip** |
+| Windows · Intel / AMD | **TokenLens-Windows-x64-3.2.2-Setup.exe** |
+| Windows · ARM / 骁龙 | **TokenLens-Windows-arm64-3.2.2-Setup.exe** |
 
 Windows 同名 `.zip` 是免安装版，完整解压后运行 `TokenLens.exe`。Mac 解压后运行 `安装.command`；DSH 余额与模型运行 `连接DSH.command`。Windows 从托盘连接 DSH。无需安装开发工具。
 
@@ -17,4 +17,4 @@ Windows 同名 `.zip` 是免安装版，完整解压后运行 `TokenLens.exe`。
 
 要求 macOS 14+、Windows 10/11。当前无 Apple 公证或 Windows 发行证书。提供六个平台下载包与 `SHA256SUMS.txt`。
 
-验证范围：Mac 五套本机检查与 480 帧原生合成预览；Windows 运动曲线、固定画布、完成队列、几何和记录解析回归检查；四架构自动构建。Windows x64 在 CI 中启动打包程序检查 Win32 接口、五助手渲染、完成反馈与光边；Windows ARM64 为交叉构建与包架构检查，尚未在 ARM 实机验收。没有为了验证而发送收费模型请求。
+验证范围：Mac 五套本机检查、摄像头点击坐标及事件路由合成检查；Windows 36 项回归检查；四架构自动构建。Windows x64 在 CI 中启动打包程序检查 Win32 接口、五助手渲染、完成反馈与光边，并通过真实渲染器点击和 IPC 检查顶部返回、提醒来源及额度按钮优先级。Windows ARM64 为交叉构建与包架构检查，尚未在 ARM 实机验收。没有为了验证而发送收费模型请求。
