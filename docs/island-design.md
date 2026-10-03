@@ -44,6 +44,8 @@ Windows 使用适合任务栏与可用屏幕区域的顶部胶囊。完成动作
 
 Windows 的用量详情包含动效与提醒设置、最近完成列表。三档强度、软件微光、停留时长、系统减少动态效果跟随和固定展开存到本机偏好文件；最近完成记录只保存在内存。原有托盘菜单、开机启动、显示器选择、前台跟随、Harness 状态桥与用量信息保留。Windows ARM64 支持交叉构建和包架构检查，尚未完成 ARM 实机交互验收。
 
+Windows 36 项检查通过，打包后的 x64 程序已在 Windows CI 启动并验证 Win32 接口、五助手渲染、九个完成曲线阶段、固定原生画布、稳定正文宽度、持续光边、减少动态效果和来源保色。查看[Windows 合成停留预览](../Preview/TokenLens-3.2.1-Windows-held.jpg)与[Windows 打包程序验证记录](../Preview/TokenLens-3.2.1-Windows-verification.json)。
+
 ## 数据口径
 
 完成动作只接受读取器提供的明确任务完成事件。GPT / Codex 与 DeepSeek Harness 有对应来源时才能触发；WorkBuddy、Claude、CodeBuddy 当前缺少可靠完成事件，继续展示可读取状态与用量，不凭软件切换、Token 增长或日志静默推断成功。取消、错误和子任务不作为成功提醒。
@@ -53,3 +55,5 @@ Windows 的用量详情包含动效与提醒设置、最近完成列表。三档
 本机已安装 3.2.1，签名校验通过，主程序和联动服务运行正常，安装文件与最终构建一致。五套检查通过，480 帧原生合成预览确认每次呈现只调整一次窗口，画布与摄像头下沿对齐，停留尺寸稳定、边缘光保持、透明光晕不接受点击。视频完整解码通过（480 帧、16 秒），GIF 为 240 帧、16 秒。本轮未重复实际鼠标点击验收。
 
 查看[最终动效预览](../Preview/TokenLens-3.2.1-jelly.mp4)与[最终验证记录](../Preview/TokenLens-3.2.1-verification.json)。原生合成预览使用明确标记的本地样例，不代表五款软件都已提供自动完成事件。本地只保留最终版本的源码、测试、预览和发行文件；旧版源文件可从 Git 历史查阅。
+
+[3.2.1 正式发行版](https://github.com/liuli-cc/tokenlens/releases/tag/v3.2.1)已提供 Mac arm64 / x86_64、Windows x64 / arm64 的六个下载包及校验文件。[四架构发布检查](https://github.com/liuli-cc/tokenlens/actions/runs/37124807573)全部通过。

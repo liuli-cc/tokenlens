@@ -1,9 +1,9 @@
 {
   "passed": true,
   "version": "3.2.1",
-  "platform": "darwin",
-  "arch": "arm64",
-  "native": false,
+  "platform": "win32",
+  "arch": "x64",
+  "native": true,
   "gpt": {
     "assistant": "gpt",
     "today": "64.6M",
@@ -432,6 +432,8 @@
       234
     ]
   },
-  "verificationScope": "Synthetic production Electron renderer on macOS; Win32 and packaged Windows verification is run by release CI",
-  "syntheticDataOnly": true
+  "verificationScope": "Packaged Windows x64 executable on Windows GitHub Actions runner, including actual Win32 binding and native window/renderer checks",
+  "syntheticDataOnly": true,
+  "ciRun": "https://github.com/liuli-cc/tokenlens/actions/runs/37124807573",
+  "sourceCommit": "4c4a626745f1b750aaffa79a2d66940468eac6f7"
 }
