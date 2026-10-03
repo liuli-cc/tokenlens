@@ -9,7 +9,7 @@ mkdir -p "$build_cache/clang"
 mkdir -p "$preview_contents/MacOS"
 export SDKROOT="/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk"
 export CLANG_MODULE_CACHE_PATH="$build_cache/clang"
-swiftc -parse-as-library -target "$preview_arch-apple-macos14.0" \
+swiftc -D TOKENLENS_PREVIEW -swift-version 6 -strict-concurrency=complete -parse-as-library -target "$preview_arch-apple-macos14.0" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/CodexLogScanner.swift" \
@@ -18,6 +18,8 @@ swiftc -parse-as-library -target "$preview_arch-apple-macos14.0" \
   "$project_dir/Sources/AdditionalAssistantReader.swift" \
   "$project_dir/Sources/UsageStore.swift" \
   "$project_dir/Sources/IslandGeometry.swift" \
+  "$project_dir/Sources/CompletionNoticeQueue.swift" \
+  "$project_dir/Sources/IslandExperience.swift" \
   "$project_dir/Sources/IslandCompactText.swift" \
   "$project_dir/Sources/MenuBarOccupancy.swift" \
   "$project_dir/Sources/DynamicIsland.swift" \

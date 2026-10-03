@@ -43,8 +43,8 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
             onOpenDetails: { [weak self] in
                 self?.showDashboard()
             },
-            onOpenCurrentAssistant: { [weak self] in
-                self?.openCurrentAssistant()
+            onOpenAssistant: { assistant in
+                Self.openAssistant(assistant)
             }
         )
         islandController = controller

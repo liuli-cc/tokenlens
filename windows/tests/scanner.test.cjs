@@ -4,13 +4,19 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
-const {CodexScanner,CompletionGate,digestDeepSeek,readDeepSeekStatus,decodeZstd,dataDirectory}=require('../lib/scanner.cjs');
+const {CodexScanner,DeepSeekScanner,CompletionGate,digestDeepSeek,readDeepSeekStatus,decodeZstd,dataDirectory,recentCompletionEvents}=require('../lib/scanner.cjs');
 const {installIntegration}=require('../lib/integration.cjs');
 const {assistantForPath}=require('../lib/native.cjs');
 
 function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'tokenlens-test-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;}
 const event=(type,payload,time=Date.now())=>JSON.stringify({timestamp:new Date(time).toISOString(),type,payload});
 function tokens(total,used=74){return {type:'token_count',info:{total_token_usage:{input_tokens:total*.8,cached_input_tokens:total*.4,output_tokens:total*.2,total_tokens:total},last_token_usage:{input_tokens:80,cached_input_tokens:40,output_tokens:20,total_tokens:100},model_context_window:400000},rate_limits:{primary:{used_percent:used,window_minutes:10080,resets_at:2000000000}}};}
+function rawZstd(text) {
+  const data=Buffer.from(text),header=Buffer.alloc(12);
+  header.set([0x28,0xb5,0x2f,0xfd,0xa0]);header.writeUInt32LE(data.length,5);
+  header.writeUIntLE((data.length<<3)|1,9,3);
+  return Buffer.concat([header,data]);
+}
 
 test('incremental Codex logs retain partial UTF-8 lines, sum deltas once and update actual models',t=>{
   const root=fixture(t),file=path.join(root,'rollout.jsonl'),now=Date.now();
@@ -43,6 +49,72 @@ test('completion feedback is primed, de-duplicated and expires instead of replay
   assert.equal(gate.accept('gpt',{id:'new',at:now},now),true);assert.equal(gate.accept('gpt',{id:'new',at:now},now),false);
   assert.equal(gate.accept('gpt',{id:'expired',at:now-91000},now),false);
   assert.equal(gate.accept('dsh',null,now),false);assert.equal(gate.accept('dsh',{id:'dsh',at:now},now),true);
+});
+test('Codex retains every root completion between polls, de-duplicates repeats and keeps legacy latest',t=>{
+  const root=fixture(t),file=path.join(root,'root.jsonl'),now=Date.now();
+  const rows=[event('session_meta',{id:'root',thread_source:'user'},now-4000),event('turn_context',{model:'gpt-current'},now-3500)];
+  fs.writeFileSync(file,rows.join('\n')+'\n');const scanner=new CodexScanner(root);
+  assert.deepEqual(scanner.scan(now).completionEvents,[]);
+  fs.appendFileSync(file,[
+    event('event_msg',{type:'task_complete',turn_id:'a'},now-2000),
+    event('event_msg',{type:'task_complete',turn_id:'b'},now-1000),
+    event('event_msg',{type:'task_complete',turn_id:'a'},now),
+    event('event_msg',{type:'task_started',turn_id:'cancelled'},now),
+    event('event_msg',{type:'turn_aborted',turn_id:'cancelled'},now),
+    event('event_msg',{type:'error',turn_id:'error'},now)
+  ].join('\n')+'\n');
+  fs.writeFileSync(path.join(root,'child.jsonl'),[
+    event('session_meta',{id:'child',source:{subagent:{}}},now-500),...rows,
+    event('event_msg',{type:'task_complete',turn_id:'child'},now)
+  ].join('\n')+'\n');
+  const result=scanner.scan(now);
+  assert.deepEqual(result.completionEvents.map(x=>x.id),['root|a','root|b']);
+  assert.equal(result.completionEvents[0].at,now-2000,'Duplicate events must not make old completion look newer');
+  assert.equal(result.completionEvents[0].model,'gpt-current');assert.equal(result.completion.id,'root|b');
+  assert.deepEqual(scanner.scan(now).completionEvents,result.completionEvents,'Unchanged scans preserve the batch for the queue to deduplicate');
+  assert.deepEqual(scanner.scan(now+90001).completionEvents,[]);assert.equal(scanner.scan(now+90001).completion.id,'root|b');
+});
+test('completion batches bound time and memory while merging duplicate session files',t=>{
+  const now=Date.now();
+  assert.deepEqual(recentCompletionEvents([
+    {id:'expired',at:now-90001},{id:'boundary',at:now-90000},
+    {id:'current',at:now},{id:'current',at:now+1},
+    {id:'future',at:now+5000},{id:'too-future',at:now+5001},
+    {id:'invalid',at:NaN},{id:'invalid-text',at:String(now)},{id:'',at:now}
+  ],now).map(x=>x.id),['boundary','current','future']);
+  const root=fixture(t),file=path.join(root,'a.jsonl');
+  const rows=[event('session_meta',{id:'root',thread_source:'user'},now-1000)];
+  for(let i=0;i<140;i++)rows.push(event('event_msg',{type:'task_complete',turn_id:String(i)},now-1000+i));
+  fs.writeFileSync(file,rows.join('\n')+'\n');fs.copyFileSync(file,path.join(root,'copy.jsonl'));
+  const scanner=new CodexScanner(root),result=scanner.scan(now);
+  assert.equal(result.completionEvents.length,128);assert.equal(result.completionEvents[0].id,'root|12');
+  assert.equal(result.completionEvents.at(-1).id,'root|139');
+  assert.equal(scanner.cache.values().next().value.digest.completionEvents.length,128);
+});
+test('DSH scanner returns completed root turn batches without duplicates, errors or delegated work',t=>{
+  const root=fixture(t),now=Date.now(),sessionDir=path.join(root,'one');fs.mkdirSync(sessionDir);
+  const file=path.join(sessionDir,'session.v4.jsonl.zstd');
+  const rows=[{type:'session',version:4,delegationDepth:0,id:'one'},
+    {type:'turn/start',time:now-4000,data:{turn:1}},
+    {type:'turn/end',time:now-3500,data:{turn:1,reason:{kind:'completed'}}},
+    {type:'turn/start',time:now-3000,data:{turn:2}},
+    {type:'turn/end',time:now-2500,data:{turn:2,reason:{kind:'completed'}}},
+    {type:'turn/end',time:now-2000,data:{turn:1,reason:{kind:'completed'}}},
+    {type:'turn/end',time:now-1500,data:{turn:3,reason:{kind:'error'}}},
+    {type:'turn/end',time:now-1000,data:{turn:4,reason:{kind:'cancelled'}}}];
+  fs.writeFileSync(file,rawZstd(rows.map(x=>JSON.stringify(x)).join('\n')));
+  const childDir=path.join(root,'child');fs.mkdirSync(childDir);
+  fs.writeFileSync(path.join(childDir,'session.v4.jsonl.zstd'),rawZstd([
+    {type:'session',version:4,delegationDepth:1,id:'child'},
+    {type:'turn/end',time:now,data:{turn:1,reason:{kind:'completed'}}}
+  ].map(x=>JSON.stringify(x)).join('\n')));
+  const scanner=new DeepSeekScanner(root,path.join(root,'missing-status.json')),result=scanner.scan(now);
+  assert.deepEqual(result.completionEvents.map(x=>x.id),['dsh|one|1','dsh|one|2']);
+  assert.equal(result.completionEvents[0].at,now-3500);assert.equal(result.completion.id,'dsh|one|2');
+  assert.deepEqual(scanner.scan(now+90001).completionEvents,[]);
+  const later={type:'turn/end',time:now+1000,data:{turn:5,reason:{kind:'completed'}}};
+  fs.writeFileSync(file,rawZstd([...rows,later].map(x=>JSON.stringify(x)).join('\n')));
+  assert.deepEqual(scanner.scan(now+1000).completionEvents.map(x=>x.id),['dsh|one|1','dsh|one|2','dsh|one|5']);
 });
 test('missing quota and invalid balances stay unavailable',t=>{
   const root=fixture(t),file=path.join(root,'empty.jsonl');

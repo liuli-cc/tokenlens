@@ -16,18 +16,48 @@ private final class IslandHostingView<Content: View>: NSHostingView<Content> {
 }
 
 @MainActor
+final class IslandPreferences: ObservableObject {
+    private let defaults: UserDefaults
+    @Published var motionStyle: IslandMotionStyle { didSet { defaults.set(motionStyle.rawValue, forKey: "island.motionStyle") } }
+    @Published var glowEnabled: Bool { didSet { defaults.set(glowEnabled, forKey: "island.glow") } }
+    @Published var soundEnabled: Bool { didSet { defaults.set(soundEnabled, forKey: "island.sound") } }
+    @Published var followSystemMotion: Bool { didSet { defaults.set(followSystemMotion, forKey: "island.followSystemMotion") } }
+    @Published var noticeDuration: Double { didSet { defaults.set(noticeDuration, forKey: "island.noticeDuration") } }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        motionStyle = IslandMotionStyle(rawValue: defaults.string(forKey: "island.motionStyle") ?? "jelly") ?? .jelly
+        glowEnabled = defaults.object(forKey: "island.glow") as? Bool ?? true
+        soundEnabled = defaults.bool(forKey: "island.sound")
+        followSystemMotion = defaults.object(forKey: "island.followSystemMotion") as? Bool ?? true
+        let duration = defaults.double(forKey: "island.noticeDuration")
+        noticeDuration = [6.0, 10.0, 14.0].contains(duration) ? duration : 6
+    }
+}
+
+enum IslandPage { case overview, history, settings }
+
+@MainActor
 final class IslandViewModel: ObservableObject {
     @Published var isExpanded = false
     @Published var completionNotice: TaskCompletionNotice?
     @Published var completionRevealed = false
     @Published var bodyHeight: CGFloat = 0
+    @Published var surfaceWidth: CGFloat = 446
+    @Published var edgeGlow: Double = 0
+    @Published var glowAssistant: IslandAssistant?
+    @Published var neckOffset: CGFloat = 0
+    @Published var isPinned = false
+    @Published var page: IslandPage = .overview
+    @Published var completionMotion = IslandCompletionMotion.sample(at: -1)
+    @Published var haloMargin: CGFloat = 24
     @Published var layout = IslandGeometry.layout(screen: CGRect(x: 0, y: 0, width: 1920, height: 1080), safeTopInset: 0, leftAux: nil, rightAux: nil)
 }
 
 @MainActor
 final class IslandPanelController: NSObject {
     private let store: UsageStore
-    private let onOpenCurrentAssistant: () -> Void
+    private let onOpenAssistant: (IslandAssistant) -> Void
+    private let preferences: IslandPreferences
     private let viewModel = IslandViewModel()
     // Two adjoining windows keep the widened body entirely below the menu band.
     // There is no large transparent expanded window sitting on system icons.
@@ -49,12 +79,28 @@ final class IslandPanelController: NSObject {
     private var lastMotionTime = CACurrentMediaTime()
     private var heightSpring = IslandSpring(position: 0, target: 0)
     private var widthSpring = IslandSpring(position: 400, target: 400)
+    private var glowSpring = IslandSpring(position: 0, target: 0, frequency: 18, damping: 1)
     private var occupied: [CGRect] = []
     private var conservativeWings = true
+    private var completionMotionStarted: Double?
+    private var completionFromHeight: Double = 0
+    private var completionFromWidth: Double = 400
+    private let haloMargin: CGFloat = 24
+    private let haloBottom: CGFloat = 26
+    private var surfaceFrame = CGRect.zero
+    private var activeCanvas: CGRect?
+    private var canvasScreen: CGRect?
+    private var canvasCrownBottom: CGFloat?
+    #if TOKENLENS_PREVIEW
+    private var bodyFrameUpdates = 0
+    #endif
 
-    init(store: UsageStore, onOpenDetails: @escaping () -> Void, onOpenCurrentAssistant: @escaping () -> Void) {
+    init(store: UsageStore, onOpenDetails: @escaping () -> Void, onOpenAssistant: @escaping (IslandAssistant) -> Void,
+         preferences: IslandPreferences? = nil) {
+        let preferences = preferences ?? IslandPreferences()
         self.store = store
-        self.onOpenCurrentAssistant = onOpenCurrentAssistant
+        self.onOpenAssistant = onOpenAssistant
+        self.preferences = preferences
         super.init()
         bodyPanel.title = "TokenLens · 展开状态"
         crown.title = "TokenLens · 顶部"
@@ -73,10 +119,17 @@ final class IslandPanelController: NSObject {
         }
         for (panel, part) in [(crown, IslandPart.crown), (bodyPanel, IslandPart.body)] {
             let host = IslandHostingView(rootView: DynamicIslandView(
-                part: part, viewModel: viewModel,
+                part: part, viewModel: viewModel, preferences: preferences,
                 onHover: { [weak self] inside in self?.hover(inside) },
                 onTap: { [weak self] in self?.handleTap() },
-                onOpenDetails: onOpenDetails, onOpenCurrentAssistant: onOpenCurrentAssistant
+                onOpenDetails: onOpenDetails, onOpenAssistant: onOpenAssistant,
+                onDismiss: { [weak self] in
+                    guard let self, let notice = self.viewModel.completionNotice else { return }
+                    self.finishCompletionNotice(notice)
+                },
+                onPage: { [weak self] page in self?.setPage(page) },
+                onPin: { [weak self] in self?.togglePin() },
+                onPreview: { [weak self] in self?.previewMotion() }
             ).environmentObject(store))
             host.sizingOptions = []
             panel.contentView = host
@@ -84,12 +137,8 @@ final class IslandPanelController: NSObject {
         store.$completionNotice.compactMap { $0 }.removeDuplicates(by: { $0.id == $1.id })
             .sink { [weak self] notice in Task { @MainActor in self?.presentCompletionNotice(notice) } }
             .store(in: &cancellables)
-        store.$activeAssistant.removeDuplicates().sink { [weak self] _ in
-            Task { @MainActor in
-                guard let self, let notice = self.viewModel.completionNotice,
-                      IslandAssistant.completionSource(notice.source) != self.store.activeAssistant else { return }
-                self.finishCompletionNotice(notice)
-            }
+        preferences.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in self?.updateTargets(animated: true) }
         }.store(in: &cancellables)
     }
 
@@ -191,18 +240,34 @@ final class IslandPanelController: NSObject {
 
     // This method is also exercised by the separate, explicitly synthetic preview.
     func presentCompletionNotice(_ notice: TaskCompletionNotice) {
-        guard IslandAssistant.completionSource(notice.source) == store.activeAssistant else { return }
+        guard IslandAssistant.completionSource(notice.source) != nil,
+              viewModel.completionNotice?.id != notice.id else { return }
         completionTask?.cancel(); hoverTask?.cancel(); collapseTask?.cancel()
+        hoverTask = nil; collapseTask = nil
+        advanceMotion()
+        completionFromHeight = heightSpring.position
+        completionFromWidth = widthSpring.position
         viewModel.completionNotice = notice
+        viewModel.glowAssistant = IslandAssistant.completionSource(notice.source)
         viewModel.completionRevealed = false
+        viewModel.completionMotion = .sample(at: 0, style: preferences.motionStyle,
+                                            reduceMotion: preferences.followSystemMotion && NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         viewModel.isExpanded = true
+        completionMotionStarted = CACurrentMediaTime()
         updateTargets(animated: true)
+        if preferences.soundEnabled && notice.provider != "Preview" { NSSound(named: "Glass")?.play() }
         completionTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(190))
+            try? await Task.sleep(for: .milliseconds(540))
             guard !Task.isCancelled, let self else { return }
             self.viewModel.completionRevealed = true
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: .seconds(self.preferences.noticeDuration))
             guard !Task.isCancelled else { return }
+            // Keep the target steady while the user reads or reaches its action.
+            for _ in 0..<60 {
+                guard self.contains(NSEvent.mouseLocation) else { break }
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+            }
             self.finishCompletionNotice(notice)
         }
     }
@@ -210,11 +275,16 @@ final class IslandPanelController: NSObject {
     private func finishCompletionNotice(_ notice: TaskCompletionNotice) {
         guard viewModel.completionNotice?.id == notice.id else { return }
         completionTask?.cancel()
+        heightSpring.position = Double(viewModel.bodyHeight)
+        widthSpring.position = Double(viewModel.surfaceWidth)
+        heightSpring.velocity = 0; widthSpring.velocity = 0
         viewModel.completionNotice = nil
         viewModel.completionRevealed = false
-        store.dismissCompletionNotice(id: notice.id)
-        viewModel.isExpanded = contains(NSEvent.mouseLocation)
+        completionMotionStarted = nil
+        viewModel.completionMotion = .sample(at: -1)
+        viewModel.isExpanded = viewModel.isPinned || contains(NSEvent.mouseLocation)
         updateTargets(animated: true)
+        store.dismissCompletionNotice(id: notice.id)
     }
 
     private func contains(_ point: CGPoint) -> Bool {
@@ -227,12 +297,12 @@ final class IslandPanelController: NSObject {
     }
     private var crownRadius: CGFloat { max(0, viewModel.layout.bandHeight / 2 * (1 - min(1, viewModel.bodyHeight / 28))) }
     private func bodyContains(_ point: CGPoint) -> Bool {
-        guard bodyPanel.isVisible, bodyPanel.frame.contains(point) else { return false }
-        return bodyShape.path(in: CGRect(origin: .zero, size: bodyPanel.frame.size))
-            .contains(CGPoint(x: point.x - bodyPanel.frame.minX, y: bodyPanel.frame.maxY - point.y))
+        guard bodyPanel.isVisible, surfaceFrame.contains(point) else { return false }
+        return bodyShape.path(in: CGRect(origin: .zero, size: surfaceFrame.size))
+            .contains(CGPoint(x: point.x - surfaceFrame.minX, y: surfaceFrame.maxY - point.y))
     }
     private var bodyShape: IslandBodyShape {
-        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width)
+        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width, reveal: min(1, viewModel.bodyHeight / 100), neckOffset: viewModel.neckOffset)
     }
     private func updateHitTesting() {
         let point = NSEvent.mouseLocation
@@ -258,7 +328,7 @@ final class IslandPanelController: NSObject {
         } else { hover(false) }
     }
     private func hover(_ reportedInside: Bool) {
-        guard viewModel.completionNotice == nil else { return }
+        guard viewModel.completionNotice == nil, !viewModel.isPinned else { return }
         // Leaving a visible wing for the invisible camera gap produces a SwiftUI
         // exit event, but the cursor is still hovering over the same island.
         let inside = reportedInside || contains(NSEvent.mouseLocation)
@@ -287,18 +357,55 @@ final class IslandPanelController: NSObject {
         }
     }
     private func handleTap() {
+        let assistant = viewModel.completionNotice.flatMap { IslandAssistant.completionSource($0.source) } ?? store.activeAssistant
         if let notice = viewModel.completionNotice { finishCompletionNotice(notice) }
-        onOpenCurrentAssistant()
+        onOpenAssistant(assistant)
     }
 
+    private func setPage(_ page: IslandPage) {
+        viewModel.page = page
+        viewModel.isExpanded = true
+        updateTargets(animated: true)
+    }
+    private func togglePin() {
+        viewModel.isPinned.toggle()
+        hoverTask?.cancel(); hoverTask = nil
+        collapseTask?.cancel(); collapseTask = nil
+        viewModel.isExpanded = viewModel.isPinned || contains(NSEvent.mouseLocation)
+        updateTargets(animated: true)
+    }
+    private func previewMotion() {
+        advanceMotion()
+        completionFromHeight = heightSpring.position
+        completionFromWidth = widthSpring.position
+        viewModel.glowAssistant = store.activeAssistant
+        completionMotionStarted = CACurrentMediaTime()
+        updateTargets(animated: true)
+    }
+
+    private var reduceMotion: Bool {
+        preferences.followSystemMotion && NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+    private var glowTarget: Double {
+        guard preferences.glowEnabled else { return 0 }
+        let holding = viewModel.completionNotice != nil ? 0.38 : 0
+        return reduceMotion ? holding : max(holding, viewModel.completionMotion.glow)
+    }
     private func updateTargets(animated: Bool) {
         advanceMotion()
-        heightSpring.target = viewModel.completionNotice != nil ? 88 : (viewModel.isExpanded ? 152 : 0)
+        heightSpring.target = viewModel.completionNotice != nil ? 118 : (viewModel.isExpanded ? (viewModel.page == .overview ? 218 : 246) : 0)
         widthSpring.target = Double(viewModel.isExpanded ? viewModel.layout.expandedWidth : viewModel.layout.bodyBaseWidth)
-        heightSpring.damping = viewModel.isExpanded ? 0.62 : 0.76
-        widthSpring.damping = heightSpring.damping
-        if !animated || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            heightSpring.settle(); widthSpring.settle()
+        // Hover and closing are critically damped. Only the single completion
+        // timeline supplies deformation; no independent spring can fight it.
+        heightSpring.damping = 1
+        widthSpring.damping = 1
+        heightSpring.frequency = viewModel.isExpanded ? 20 : 24
+        widthSpring.frequency = heightSpring.frequency
+        glowSpring.target = glowTarget
+        if !animated || reduceMotion {
+            heightSpring.settle(); widthSpring.settle(); glowSpring.settle()
+            completionMotionStarted = nil
+            viewModel.completionMotion = .sample(at: -1)
             motionTimer?.invalidate(); motionTimer = nil
             applyMotion()
             return
@@ -310,34 +417,161 @@ final class IslandPanelController: NSObject {
             RunLoop.main.add(timer, forMode: .common)
         }
     }
+    private func sampleCompletion(elapsed: Double) {
+        let sample = IslandCompletionMotion.sample(at: elapsed, style: preferences.motionStyle, reduceMotion: reduceMotion)
+        viewModel.completionMotion = sample
+        heightSpring.position = completionFromHeight + (heightSpring.target - completionFromHeight) * sample.openingProgress
+        widthSpring.position = completionFromWidth + (widthSpring.target - completionFromWidth) * sample.openingProgress
+        heightSpring.velocity = 0; widthSpring.velocity = 0
+    }
     private func advanceMotion() {
         let now = CACurrentMediaTime()
-        if motionTimer != nil {
-            heightSpring.advance(by: now - lastMotionTime)
-            widthSpring.advance(by: now - lastMotionTime)
+        let delta = max(0, now - lastMotionTime)
+        if let started = completionMotionStarted {
+            let elapsed = now - started
+            sampleCompletion(elapsed: elapsed)
+            if elapsed >= IslandCompletionMotion.duration { completionMotionStarted = nil }
+        } else if motionTimer != nil {
+            heightSpring.advance(by: delta)
+            widthSpring.advance(by: delta)
         }
+        glowSpring.target = glowTarget
+        glowSpring.advance(by: delta)
         lastMotionTime = now
     }
     @objc private func tick() {
         advanceMotion()
-        if heightSpring.isSettled && widthSpring.isSettled {
-            heightSpring.settle(); widthSpring.settle()
+        if heightSpring.isSettled && widthSpring.isSettled && glowSpring.isSettled && completionMotionStarted == nil {
+            heightSpring.settle(); widthSpring.settle(); glowSpring.settle()
             motionTimer?.invalidate(); motionTimer = nil
         }
         applyMotion()
-        // A stationary pointer must track the contour as the spring moves it.
+        // A stationary pointer must track the contour as it deforms, including
+        // the transparent halo of the fixed-size canvas.
         if viewModel.completionNotice == nil { hover(contains(NSEvent.mouseLocation)) }
     }
     private func applyMotion() {
-        let height = max(0, CGFloat(heightSpring.position))
-        let width = max(viewModel.layout.bodyBaseWidth, CGFloat(widthSpring.position))
+        let height = max(0, CGFloat(heightSpring.position + viewModel.completionMotion.heightOffset))
+        let width = max(viewModel.layout.bodyBaseWidth, CGFloat(widthSpring.position + viewModel.completionMotion.widthOffset))
+        if height > 0.25 && (activeCanvas == nil || canvasScreen != viewModel.layout.screen || canvasCrownBottom != crown.frame.minY) {
+            let canvasWidth = min(viewModel.layout.bodyMaximumWidth, max(viewModel.layout.expandedWidth + 12, viewModel.layout.bodyBaseWidth))
+            let margin = min(haloMargin, max(0, (viewModel.layout.bodyMaximumWidth - canvasWidth) / 2))
+            viewModel.haloMargin = margin
+            var canvas = viewModel.layout.bodyFrame(width: canvasWidth + margin * 2, height: 264 + haloBottom)
+            canvas.origin.y = crown.frame.minY - canvas.height
+            bodyPanel.setFrame(canvas, display: true)
+            // AppKit may round a fractional requested frame. Retain its actual
+            // result so no subpixel mismatch retriggers a window resize.
+            activeCanvas = bodyPanel.frame
+            canvasScreen = viewModel.layout.screen
+            canvasCrownBottom = crown.frame.minY
+            #if TOKENLENS_PREVIEW
+            bodyFrameUpdates += 1
+            #endif
+        }
+        let anchor = activeCanvas?.midX ?? viewModel.layout.bodyAnchorX
+        let capacity = max(1, 2 * min(anchor - viewModel.layout.screen.minX, viewModel.layout.screen.maxX - anchor))
+        let visibleWidth = min(width, capacity)
+        surfaceFrame = CGRect(x: anchor - visibleWidth / 2, y: (activeCanvas?.maxY ?? crown.frame.minY) - height,
+                              width: visibleWidth, height: height)
         viewModel.bodyHeight = height
+        viewModel.surfaceWidth = surfaceFrame.width
+        viewModel.neckOffset = viewModel.layout.crownFrame.midX - anchor
+        viewModel.edgeGlow = min(1, max(0, glowSpring.position))
+        if viewModel.completionNotice == nil && completionMotionStarted == nil && viewModel.edgeGlow < 0.005 {
+            viewModel.glowAssistant = nil
+        }
         if height > 0.25 {
-            bodyPanel.setFrame(viewModel.layout.bodyFrame(width: width, height: height), display: true)
+            // One fixed canvas for every body state. WindowServer no longer
+            // resizes/repositions a native window at each animation frame.
             if !bodyPanel.isVisible { bodyPanel.orderFrontRegardless() }
-        } else { bodyPanel.orderOut(nil) }
+        } else {
+            bodyPanel.orderOut(nil)
+            activeCanvas = nil; canvasScreen = nil; canvasCrownBottom = nil
+        }
         updateHitTesting()
     }
+
+    #if TOKENLENS_PREVIEW
+    func previewStep(elapsed: Double, by delta: Double) {
+        motionTimer?.invalidate(); motionTimer = nil
+        completionTask?.cancel(); completionTask = nil
+        completionMotionStarted = nil
+        sampleCompletion(elapsed: elapsed)
+        glowSpring.target = glowTarget
+        glowSpring.advance(by: delta)
+        viewModel.completionRevealed = elapsed >= 0.54
+        applyMotion()
+    }
+    func previewCloseNotice() {
+        if let notice = viewModel.completionNotice { finishCompletionNotice(notice) }
+    }
+    func previewReset() {
+        completionTask?.cancel(); completionTask = nil
+        motionTimer?.invalidate(); motionTimer = nil
+        completionMotionStarted = nil
+        viewModel.isPinned = false
+        viewModel.isExpanded = false
+        viewModel.page = .overview
+        viewModel.completionMotion = .sample(at: -1)
+        heightSpring.target = 0; heightSpring.settle()
+        widthSpring.target = Double(viewModel.layout.bodyBaseWidth); widthSpring.settle()
+        glowSpring.target = 0; glowSpring.settle()
+        applyMotion()
+    }
+    func previewPage(_ page: IslandPage) {
+        setPage(page)
+        viewModel.isPinned = true
+    }
+    func previewDiagnostics() -> [String: Any] {
+        let frame = bodyPanel.frame
+        let transparent = CGPoint(x: frame.minX + 2, y: frame.minY + 2)
+        return ["visible": bodyPanel.isVisible, "canvas": [frame.minX, frame.minY, frame.width, frame.height],
+                "surface": [surfaceFrame.minX, surfaceFrame.minY, surfaceFrame.width, surfaceFrame.height],
+                "glow": viewModel.edgeGlow, "haloAcceptsClicks": bodyContains(transparent),
+                "bodyFrameUpdates": bodyFrameUpdates, "crownBottom": crown.frame.minY]
+    }
+    /// Captures only this synthetic preview's own rendered views. No desktop,
+    /// chat contents, user sessions or other applications enter the artifact.
+    func previewCapture(to url: URL) throws {
+        let canvas = NSSize(width: 680, height: 380)
+        let image = NSImage(size: canvas)
+        image.lockFocus()
+        NSColor(srgbRed: 0.07, green: 0.075, blue: 0.09, alpha: 1).setFill()
+        CGRect(origin: .zero, size: canvas).fill()
+        func draw(_ panel: NSPanel, at origin: CGPoint) {
+            guard panel.isVisible, let host = panel.contentView else { return }
+            // SwiftUI reuses backing layers after motion settles. Force this
+            // synthetic export's entire view tree to redraw into the bitmap.
+            func invalidate(_ view: NSView) {
+                view.needsDisplay = true
+                for child in view.subviews { invalidate(child) }
+            }
+            invalidate(host)
+            host.layoutSubtreeIfNeeded()
+            host.display()
+            CATransaction.flush()
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let shot = NSImage(size: host.bounds.size)
+            shot.addRepresentation(rep)
+            shot.draw(in: CGRect(origin: origin, size: host.bounds.size))
+        }
+        let crownOrigin = CGPoint(x: (canvas.width - crown.frame.width) / 2, y: 328 - crown.frame.height)
+        draw(crown, at: crownOrigin)
+        draw(bodyPanel, at: CGPoint(x: crownOrigin.x + bodyPanel.frame.minX - crown.frame.minX,
+                                   y: crownOrigin.y + bodyPanel.frame.minY - crown.frame.minY))
+        let label = "TokenLens · 本地合成动效预览"
+        (label as NSString).draw(at: CGPoint(x: 22, y: 18), withAttributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.35)
+        ])
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return }
+        try png.write(to: url)
+    }
+    #endif
 }
 
 private enum IslandPart { case crown, body }
@@ -353,11 +587,14 @@ private struct CrownShape: Shape {
 
 private struct IslandBodyShape: Shape {
     let neckWidth: CGFloat
+    var reveal: CGFloat = 1
+    var neckOffset: CGFloat = 0
     func path(in rect: CGRect) -> Path {
-        let shoulder = min(23, rect.height / 2)
+        let shoulder = min(23 + (1 - reveal) * 30, rect.height / 2)
         let bottom = min(28, rect.height / 2)
         let halfNeck = min(neckWidth, rect.width) / 2
-        let l = rect.midX - halfNeck, r = rect.midX + halfNeck
+        let l = max(0, min(rect.maxX, rect.midX + neckOffset - halfNeck))
+        let r = max(l, min(rect.maxX, rect.midX + neckOffset + halfNeck))
         return Path { p in
             p.move(to: CGPoint(x: l, y: 0))
             p.addLine(to: CGPoint(x: r, y: 0))
@@ -375,29 +612,44 @@ private struct IslandBodyShape: Shape {
 
 private struct DynamicIslandView: View {
     @EnvironmentObject private var store: UsageStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     let part: IslandPart
     @ObservedObject var viewModel: IslandViewModel
+    @ObservedObject var preferences: IslandPreferences
     let onHover: (Bool) -> Void
     let onTap: () -> Void
     let onOpenDetails: () -> Void
-    let onOpenCurrentAssistant: () -> Void
+    let onOpenAssistant: (IslandAssistant) -> Void
+    let onDismiss: () -> Void
+    let onPage: (IslandPage) -> Void
+    let onPin: () -> Void
+    let onPreview: () -> Void
+    private var reduceMotion: Bool { systemReduceMotion && preferences.followSystemMotion }
     private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
-    private var data: UsageSnapshot { store.activeSnapshot }
-    private var accent: Color { Color(store.activeAssistant.palette.accent) }
+    private var presentationAssistant: IslandAssistant {
+        viewModel.completionNotice.flatMap { IslandAssistant.completionSource($0.source) } ?? store.activeAssistant
+    }
+    private var data: UsageSnapshot { store.snapshot(for: presentationAssistant) }
+    private var accent: Color { Color(presentationAssistant.palette.accent) }
+    private var edgeAccent: Color { Color((viewModel.glowAssistant ?? presentationAssistant).palette.accent) }
+    private var edgeGradient: LinearGradient {
+        let palette = (viewModel.glowAssistant ?? presentationAssistant).palette
+        return LinearGradient(colors: [Color(palette.start), Color(palette.accent), Color(palette.end)],
+                              startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
     private var accentGradient: LinearGradient {
-        LinearGradient(colors: [Color(store.activeAssistant.palette.start), Color(store.activeAssistant.palette.end)],
+        LinearGradient(colors: [Color(presentationAssistant.palette.start), Color(presentationAssistant.palette.end)],
                        startPoint: .leading, endPoint: .trailing)
     }
     private var hasModel: Bool { !data.currentModel.hasPrefix("模型未") && !data.currentModel.hasPrefix("等待") }
-    private var model: String { hasModel ? data.currentModel : store.activeAssistant.displayName }
-    private var assistant: String { store.activeAssistant.displayName }
+    private var model: String { hasModel ? data.currentModel : presentationAssistant.displayName }
+    private var assistant: String { presentationAssistant.displayName }
     private var activity: Bool { data.isTaskRunning }
-    private var metric: String { store.activeMetricValue }
+    private var metric: String { viewModel.completionNotice != nil ? "完成" : store.activeMetricValue }
     private var metricTitle: String { store.activeMetricTitle }
     private var crownShape: CrownShape { CrownShape(radius: max(0, viewModel.layout.bandHeight / 2 * (1 - min(1, viewModel.bodyHeight / 28)))) }
     private var bodyShape: IslandBodyShape {
-        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width)
+        IslandBodyShape(neckWidth: viewModel.layout.crownFrame.width, reveal: min(1, viewModel.bodyHeight / 100), neckOffset: viewModel.neckOffset)
     }
 
     var body: some View {
@@ -413,6 +665,7 @@ private struct DynamicIslandView: View {
     private var crownContent: some View {
         ZStack {
             crownShape.fill(Color.black)
+            crownShape.stroke(edgeGradient.opacity(viewModel.edgeGlow * 0.78), lineWidth: 1.3)
             HStack(spacing: 0) {
                 HStack(spacing: 4) {
                     if viewModel.layout.leftWing >= 100 { signal.frame(width: 13, height: 18) }
@@ -459,61 +712,214 @@ private struct DynamicIslandView: View {
     }
 
     private var expandedBody: some View {
-        GeometryReader { geometry in
+        ZStack(alignment: .top) {
             ZStack(alignment: .top) {
+                // All glow contours live outside the content mask. A sharp
+                // luminous rim remains visible even when background blur is
+                // reduced by the system's compositor/accessibility settings.
+                bodyShape.stroke(edgeGradient.opacity(viewModel.edgeGlow * 0.65), lineWidth: 1.3)
+                    .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight)
+                    .shadow(color: edgeAccent.opacity(viewModel.edgeGlow * 0.55), radius: 8)
+                    .shadow(color: edgeAccent.opacity(viewModel.edgeGlow * 0.3), radius: 3)
+                    .allowsHitTesting(false)
                 bodyShape.fill(Color.black)
-                Group {
-                    if let notice = viewModel.completionNotice {
-                        completion(notice)
-                    } else { expanded }
+                    .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight)
+                    .shadow(color: .black.opacity(0.32), radius: 7, x: 0, y: 4)
+                ZStack(alignment: .top) {
+                    bodyShape.fill(LinearGradient(colors: [.white.opacity(0.035), .black], startPoint: .top, endPoint: .bottom))
+                    Group {
+                        if let notice = viewModel.completionNotice { completion(notice) }
+                        else {
+                            VStack(spacing: 0) {
+                                toolbar
+                                switch viewModel.page {
+                                case .overview: expanded
+                                case .history: history
+                                case .settings: settings
+                                }
+                            }
+                        }
+                    }
+                    .frame(width: viewModel.layout.expandedWidth, height: viewModel.completionNotice != nil ? 118 : (viewModel.page == .overview ? 218 : 246), alignment: .top)
+                    .opacity(viewModel.completionNotice != nil && !reduceMotion ? viewModel.completionMotion.reveal : 1)
                 }
-                .frame(width: geometry.size.width, height: viewModel.completionNotice == nil ? 152 : 88, alignment: .top)
+                .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight, alignment: .top)
+                .clipShape(bodyShape)
+                bodyShape.stroke(LinearGradient(colors: [.white.opacity(0.11), .white.opacity(0.035)],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)
+                    .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight)
+                    .allowsHitTesting(false)
+                bodyShape.stroke(edgeGradient.opacity(viewModel.edgeGlow * 0.92), lineWidth: 1.35)
+                    .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight)
+                    .allowsHitTesting(false)
             }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
-            .clipShape(bodyShape)
+            .frame(width: viewModel.surfaceWidth, height: viewModel.bodyHeight, alignment: .top)
             .contentShape(bodyShape)
-            .onHover(perform: onHover).onTapGesture(perform: onTap)
+            .onHover(perform: onHover)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 5) {
+                Circle().fill(accent).frame(width: 4, height: 4)
+                Text(viewModel.page == .overview ? "助手状态" : (viewModel.page == .history ? "最近完成" : "灵动岛偏好"))
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.56))
+            }
+            Spacer()
+            if viewModel.page != .overview {
+                iconButton("返回状态", symbol: "arrow.left", active: false) { onPage(.overview) }
+            }
+            iconButton("最近完成", symbol: "clock.arrow.circlepath", active: viewModel.page == .history) { onPage(.history) }
+            iconButton(viewModel.isPinned ? "取消固定" : "固定展开", symbol: viewModel.isPinned ? "pin.fill" : "pin", active: viewModel.isPinned, action: onPin)
+            iconButton("动效与提醒设置", symbol: "slider.horizontal.3", active: viewModel.page == .settings) { onPage(.settings) }
+        }
+        .padding(.horizontal, 23).padding(.top, 15).padding(.bottom, 11)
+    }
+
+    private func iconButton(_ title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .medium))
+                .foregroundStyle(active ? accent : .white.opacity(0.5)).frame(width: 23, height: 20)
+                .background(active ? accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).help(title).accessibilityLabel(title)
     }
 
     private var expanded: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
-                signal.frame(width: 24, height: 26)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model).font(.system(size: 13, weight: .semibold)).foregroundStyle(accentGradient).lineLimit(1)
-                    Text(activity ? "正在处理任务" : (hasModel ? assistant : "当前模型未读取"))
-                        .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.58))
+        VStack(spacing: 13) {
+            HStack(spacing: 11) {
+                AssistantGlyph(assistant: presentationAssistant, size: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.94)).lineLimit(1)
+                    HStack(spacing: 5) {
+                        if activity { signal.frame(width: 13, height: 11) }
+                        Text(activity ? "正在处理任务" : assistant).font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.48))
+                    }
                 }
-                Spacer(minLength: 12)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(metric).font(.system(size: 16, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(accentGradient)
-                    Text(metricTitle).font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+                Spacer(minLength: 10)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(metric).font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(accentGradient)
+                    Text(metricTitle).font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.43))
                 }
             }
             HStack(spacing: 12) {
                 IslandMetric(title: "今日 Token", value: data.tokenDisplayValue)
                 IslandMetric(title: data.contextIsEstimate && data.contextPercent != nil ? "上下文估算" : "上下文", value: data.contextDisplayValue)
                 IslandMetric(title: "缓存命中", value: data.cacheHitDisplayValue)
+            }.help(data.metricsDiagnostic ?? data.metricsSource)
+            Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5)
+            HStack(spacing: 9) {
+                ForEach(IslandAssistant.allCases, id: \.self) { item in
+                    Button { onOpenAssistant(item) } label: {
+                        AssistantGlyph(assistant: item, size: 21)
+                            .padding(4).background(item == presentationAssistant ? Color(item.palette.accent).opacity(0.12) : .white.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain).help("打开 " + item.displayName).accessibilityLabel("打开 " + item.displayName)
+                }
+                Spacer(minLength: 4)
+                if let rechargeURL = data.providerRechargeURL {
+                    Button("充值") { NSWorkspace.shared.open(rechargeURL) }.buttonStyle(IslandButtonStyle(accent: .white.opacity(0.6)))
+                }
+                Button("用量详情", action: onOpenDetails).buttonStyle(IslandButtonStyle(accent: .white.opacity(0.65)))
             }
-            .help(data.metricsDiagnostic ?? data.metricsSource)
-            HStack(spacing: 12) {
-                Button(action: onOpenCurrentAssistant) { Label("返回 \(assistant)", systemImage: "arrow.up.right") }
+            HStack {
+                Button { onOpenAssistant(presentationAssistant) } label: { Label("返回 " + assistant, systemImage: "arrow.up.right") }
                     .buttonStyle(IslandButtonStyle(accent: accent))
                 Spacer()
-                if let rechargeURL = data.providerRechargeURL {
-                    Button("充值") { NSWorkspace.shared.open(rechargeURL) }
-                        .buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
-                        .help("打开当前 API 提供方的充值页面")
+                if let notice = store.recentCompletions.first {
+                    Text(notice.completedAt, style: .relative).font(.system(size: 9)).foregroundStyle(.white.opacity(0.32))
+                    Text("前完成").font(.system(size: 9)).foregroundStyle(.white.opacity(0.32))
                 }
-                Button("用量详情", action: onOpenDetails).buttonStyle(IslandButtonStyle(accent: .white.opacity(0.7)))
             }
-        }.padding(.horizontal, 23).padding(.top, 15).padding(.bottom, 14)
+        }.padding(.horizontal, 23)
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if store.recentCompletions.isEmpty {
+                VStack(spacing: 9) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 24, weight: .light)).foregroundStyle(accent.opacity(0.7))
+                    Text("完成的任务会留在这里").font(.system(size: 12, weight: .medium))
+                    Text("只收录本次运行中收到的明确完成事件").font(.system(size: 10)).foregroundStyle(.white.opacity(0.42))
+                }.frame(maxWidth: .infinity).padding(.top, 38)
+            } else {
+                ScrollView {
+                    VStack(spacing: 5) {
+                        ForEach(store.recentCompletions, id: \.id) { notice in
+                            if let source = IslandAssistant.completionSource(notice.source) {
+                                Button { onOpenAssistant(source) } label: {
+                                    HStack(spacing: 9) {
+                                        AssistantGlyph(assistant: source, size: 25)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(notice.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.88)).lineLimit(1)
+                                            Text(source.displayName).font(.system(size: 9)).foregroundStyle(Color(source.palette.accent).opacity(0.8))
+                                        }
+                                        Spacer(minLength: 6)
+                                        Text(notice.completedAt, style: .time).font(.system(size: 9)).monospacedDigit().foregroundStyle(.white.opacity(0.38))
+                                        Image(systemName: "arrow.up.right").font(.system(size: 8)).foregroundStyle(.white.opacity(0.3))
+                                    }.padding(9).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }.frame(height: 175)
+            }
+        }.padding(.horizontal, 21)
+    }
+
+    private var settings: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("弹跳质感").font(.system(size: 11))
+                Spacer()
+                ForEach(IslandMotionStyle.allCases, id: \.self) { style in
+                    Button { preferences.motionStyle = style } label: {
+                        Text(style.title).font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(preferences.motionStyle == style ? accent : .white.opacity(0.45))
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(preferences.motionStyle == style ? accent.opacity(0.13) : .white.opacity(0.035), in: Capsule())
+                    }.buttonStyle(.plain)
+                }
+            }
+            HStack {
+                Toggle("软件微光", isOn: $preferences.glowEnabled)
+                Spacer(minLength: 25)
+                Toggle("完成提示音", isOn: $preferences.soundEnabled)
+            }.toggleStyle(.switch).controlSize(.mini).font(.system(size: 11)).tint(accent)
+            HStack {
+                Toggle("跟随系统减少动态效果", isOn: $preferences.followSystemMotion)
+                    .toggleStyle(.switch).controlSize(.mini).font(.system(size: 10)).tint(accent)
+                Spacer()
+                Text(reduceMotion ? "轻静显示" : "完整动效").font(.system(size: 9)).foregroundStyle(.white.opacity(0.36))
+            }
+            HStack {
+                Text("提醒停留").font(.system(size: 11))
+                Spacer()
+                ForEach([6.0, 10.0, 14.0], id: \.self) { duration in
+                    Button { preferences.noticeDuration = duration } label: {
+                        Text("\(Int(duration)) 秒").font(.system(size: 10)).foregroundStyle(preferences.noticeDuration == duration ? accent : .white.opacity(0.4))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(preferences.noticeDuration == duration ? accent.opacity(0.13) : .white.opacity(0.035), in: Capsule())
+                    }.buttonStyle(.plain)
+                }
+            }
+            Rectangle().fill(.white.opacity(0.07)).frame(height: 0.5)
+            HStack {
+                Text(reduceMotion ? "已跟随系统减少动态效果" : "悬停可延长提醒 · 历史保留最近 20 条")
+                    .font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
+                Spacer()
+                Button("试试弹跳", action: onPreview).buttonStyle(IslandButtonStyle(accent: accent))
+            }
+            Text("GPT / Harness 有明确完成事件时自动提醒；其他软件接入可靠事件后启用。")
+                .font(.system(size: 9)).foregroundStyle(.white.opacity(0.35)).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.horizontal, 23).padding(.top, 2)
     }
 
     private var signal: some View {
         ZStack {
-            if activity {
+            if viewModel.completionNotice != nil {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(accentGradient)
+            } else if activity {
                 TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
                     HStack(spacing: 2.4) {
                         ForEach(0..<3) { index in
@@ -522,35 +928,81 @@ private struct DynamicIslandView: View {
                     }
                 }
             } else {
-                Image(systemName: store.activeAssistant.symbolName)
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(accentGradient)
+                Image(systemName: presentationAssistant.symbolName).font(.system(size: 12, weight: .semibold)).foregroundStyle(accentGradient)
             }
-        }.accessibilityLabel(activity ? "任务进行中" : "未观察到进行中的任务")
+        }.accessibilityLabel(viewModel.completionNotice != nil ? "任务完成" : (activity ? "任务进行中" : "未观察到进行中的任务"))
     }
 
     private func completion(_ notice: TaskCompletionNotice) -> some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle().fill(accent.opacity(0.15))
-                Circle().stroke(accent.opacity(viewModel.completionRevealed ? 0 : 0.45), lineWidth: 1)
-                    .scaleEffect(reduceMotion ? 1 : (viewModel.completionRevealed ? 1.32 : 0.8))
-                CheckmarkShape().trim(from: 0, to: viewModel.completionRevealed ? 1 : 0)
-                    .stroke(accentGradient, style: StrokeStyle(lineWidth: 2.3, lineCap: .round, lineJoin: .round))
-                    .frame(width: 18, height: 15)
-            }.frame(width: 40, height: 40)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.48), value: viewModel.completionRevealed)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("任务完成").foregroundStyle(accentGradient)
-                    Text("· \(assistant)").foregroundStyle(.white.opacity(0.45))
-                }.font(.system(size: 10.5, weight: .semibold))
-                Text(notice.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                Text(store.activeAssistant != .chatGPT ? "已收到完成事件 · 点击返回查看" : "\(notice.usageKnown ? notice.usageDisplayValue + " Token" : "计数未返回") · \(notice.secondaryMetricTitle) \(notice.secondaryMetricValue)")
-                    .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
+        VStack(spacing: 10) {
+            HStack(spacing: 13) {
+                ZStack(alignment: .bottomTrailing) {
+                    AssistantGlyph(assistant: presentationAssistant, size: 39)
+                        .scaleEffect(x: 1 + viewModel.completionMotion.iconSquash,
+                                     y: 1 - viewModel.completionMotion.iconSquash, anchor: .bottom)
+                        .offset(y: viewModel.completionMotion.iconLift)
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(accent).background(.black, in: Circle())
+                        .opacity(viewModel.completionRevealed ? 1 : 0)
+                        .offset(x: 4, y: 4)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: viewModel.completionRevealed)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 5) {
+                        Text("任务完成").foregroundStyle(accentGradient)
+                        Text("· " + assistant).foregroundStyle(.white.opacity(0.42))
+                    }.font(.system(size: 10, weight: .semibold))
+                    Text(notice.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.95)).lineLimit(1)
+                    Text(completionDetail(notice))
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.46)).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.4))
+            }.contentShape(Rectangle()).onTapGesture(perform: onTap)
+            HStack {
+                Text(store.pendingCompletionCount > 1 ? "另有 \(store.pendingCompletionCount - 1) 条提醒" : "点击返回查看 · 悬停继续停留")
+                    .font(.system(size: 9)).foregroundStyle(.white.opacity(0.34))
+                Spacer()
+                Button(store.pendingCompletionCount > 1 ? "下一条" : "关闭提醒", action: onDismiss)
+                    .buttonStyle(IslandButtonStyle(accent: .white.opacity(0.5)))
             }
-            Spacer(minLength: 0)
-            Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.4))
-        }.padding(.horizontal, 24).padding(.vertical, 14)
+        }.padding(.horizontal, 25).padding(.top, 20)
+    }
+
+    private func completionDetail(_ notice: TaskCompletionNotice) -> String {
+        let tokens = notice.usageKnown ? notice.usageDisplayValue + " Token" : "计数未返回"
+        if presentationAssistant == .chatGPT {
+            return tokens + " · " + notice.secondaryMetricTitle + " " + notice.secondaryMetricValue
+        }
+        return notice.usageKnown ? tokens : "已收到明确完成事件"
+    }
+}
+
+@MainActor
+private enum AssistantIconCache {
+    static var icons: [IslandAssistant: NSImage] = [:]
+    static func icon(for assistant: IslandAssistant) -> NSImage? {
+        if let cached = icons[assistant] { return cached }
+        guard let url = assistant.bundleIdentifiers.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icons[assistant] = icon
+        return icon
+    }
+}
+
+private struct AssistantGlyph: View {
+    let assistant: IslandAssistant
+    let size: CGFloat
+    var body: some View {
+        Group {
+            if let icon = AssistantIconCache.icon(for: assistant) {
+                Image(nsImage: icon).resizable().interpolation(.high).scaledToFit()
+            } else {
+                Image(systemName: assistant.symbolName).font(.system(size: size * 0.5, weight: .medium))
+                    .foregroundStyle(Color(assistant.palette.accent)).frame(width: size, height: size)
+                    .background(Color(assistant.palette.accent).opacity(0.1), in: RoundedRectangle(cornerRadius: size * 0.25))
+            }
+        }.frame(width: size, height: size).accessibilityHidden(true)
     }
 }
 

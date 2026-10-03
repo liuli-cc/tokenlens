@@ -71,7 +71,7 @@ actor CodexLogScanner {
             threadTitleStore.title(for: completion.sessionID)
                 ?? completion.fallbackTitle.nonEmpty
         }
-        return makeSnapshot(
+        var snapshot = makeSnapshot(
             from: digests,
             ccSwitch: ccSwitch,
             latestCompletion: latestCompletion,
@@ -82,6 +82,20 @@ actor CodexLogScanner {
             historyDays: historyDays,
             filesObserved: observed.count
         )
+        let latestNotice = snapshot.latestCompletion
+        let events = digests.filter(\.isUserThread).flatMap(\.completionEvents).filter {
+            let age = now.timeIntervalSince($0.completedAt)
+            return age >= -5 && age <= CompletionEventBatch.freshness
+        }
+        snapshot.completionEvents = CompletionEventBatch.recent(events.map { completion in
+            if let latestNotice, completion.id == latestNotice.id { return latestNotice }
+            // Cost lookup above belongs only to the latest task's time window.
+            // Never copy that cost into earlier or concurrent task notices.
+            return makeCompletionNotice(completion,
+                title: threadTitleStore.title(for: completion.sessionID) ?? completion.fallbackTitle.nonEmpty,
+                taskCost: nil, quotaUsedPercent: nil)
+        }, now: now)
+        return snapshot
     }
 
     private func sessionFiles(resourceKeys: Set<URLResourceKey>) throws -> [URL] {
@@ -323,7 +337,8 @@ actor CodexLogScanner {
         let turnID = rawTurnID ?? digest.activeTurnID ?? ""
         let completedAt = rawCompletedAt ?? timestamp
         let startedAt = rawStartedAt ?? digest.activeTaskStartedAt ?? completedAt
-        if digest.latestCompletion?.turnID == turnID {
+        if digest.latestCompletion?.turnID == turnID
+            || digest.completionEvents.contains(where: { $0.turnID == turnID }) {
             digest.latestEventAt = maxDate(digest.latestEventAt, completedAt ?? timestamp)
             return
         }
@@ -352,6 +367,17 @@ actor CodexLogScanner {
                 startedAt: startedAt ?? completedAt,
                 completedAt: completedAt
             )
+            if let completion = digest.latestCompletion,
+               !digest.completionEvents.contains(where: { $0.id == completion.id }) {
+                digest.completionEvents.append(completion)
+                let newest = digest.completionEvents.map(\.completedAt).max() ?? completedAt
+                digest.completionEvents = Array(digest.completionEvents.filter {
+                    newest.timeIntervalSince($0.completedAt) <= CompletionEventBatch.freshness
+                }.sorted {
+                    if $0.completedAt != $1.completedAt { return $0.completedAt < $1.completedAt }
+                    return $0.id < $1.id
+                }.suffix(CompletionEventBatch.maximumCount))
+            }
         }
         digest.activeTurnID = nil
         digest.activeTaskStartedAt = nil
@@ -457,28 +483,8 @@ actor CodexLogScanner {
         let activeProvider = activeCCProvider ?? displayProvider(active?.currentProvider ?? "openai")
         let activeSource = officialSession ? "Codex" : (activeCCProvider == nil ? "Codex 外部模型" : "CC Switch")
         let completionNotice = latestCompletion.map { completion in
-            let providerIdentity = completion.provider.lowercased()
-            let usesExternalModel = ccSwitch.taskCost != nil
-                || (providerIdentity != "openai"
-                    && providerIdentity != "default"
-                    && !providerIdentity.contains("official"))
-            let completionProvider = ccSwitch.taskCost?.providers.joined(separator: " / ").nonEmpty
-                ?? (providerIdentity == "custom" ? "CC Switch" : displayProvider(completion.provider))
-            return TaskCompletionNotice(
-                id: completion.id,
-                sessionID: completion.sessionID,
-                turnID: completion.turnID,
-                title: completionTitle ?? "任务已完成",
-                provider: completionProvider,
-                model: completion.model,
-                source: usesExternalModel ? "CC Switch" : "Codex",
-                usage: completion.usage,
-                quotaUsedPercent: usesExternalModel ? nil : completionQuotaUsedPercent,
-                costUSD: usesExternalModel ? ccSwitch.taskCost?.costUSD : nil,
-                startedAt: completion.startedAt,
-                completedAt: completion.completedAt,
-                usageKnown: completion.usageKnown
-            )
+            makeCompletionNotice(completion, title: completionTitle, taskCost: ccSwitch.taskCost,
+                                 quotaUsedPercent: completionQuotaUsedPercent)
         }
 
         return UsageSnapshot(
@@ -512,6 +518,23 @@ actor CodexLogScanner {
             quotaLimitID: officialSession ? quotaDigest?.quotaLimitID : nil,
             quotaLimitName: officialSession ? quotaDigest?.quotaLimitName : nil
         )
+    }
+
+    private func makeCompletionNotice(_ completion: RawTaskCompletion, title: String?,
+                                      taskCost: CCSwitchTaskCost?, quotaUsedPercent: Double?) -> TaskCompletionNotice {
+        let providerIdentity = completion.provider.lowercased()
+        let usesExternalModel = taskCost != nil
+            || (providerIdentity != "openai"
+                && providerIdentity != "default"
+                && !providerIdentity.contains("official"))
+        let completionProvider = taskCost?.providers.joined(separator: " / ").nonEmpty
+            ?? (providerIdentity == "custom" ? "CC Switch" : displayProvider(completion.provider))
+        return TaskCompletionNotice(id: completion.id, sessionID: completion.sessionID, turnID: completion.turnID,
+            title: title ?? "任务已完成", provider: completionProvider, model: completion.model,
+            source: usesExternalModel ? "CC Switch" : "Codex", usage: completion.usage,
+            quotaUsedPercent: usesExternalModel ? nil : quotaUsedPercent,
+            costUSD: usesExternalModel ? taskCost?.costUSD : nil,
+            startedAt: completion.startedAt, completedAt: completion.completedAt, usageKnown: completion.usageKnown)
     }
 
     private func normalizedConversationTitle(_ raw: String) -> String? {
@@ -657,6 +680,7 @@ private struct SessionDigest: Sendable {
     var activeTaskQuotaUsedPercent: Double?
     var activeTaskQuotaResetAt: Date?
     var latestCompletion: RawTaskCompletion?
+    var completionEvents: [RawTaskCompletion] = []
 }
 
 private struct TokenSample: Sendable {

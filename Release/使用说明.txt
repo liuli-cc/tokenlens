@@ -1,4 +1,4 @@
-TokenLens 3.1 · 五款助手灵动岛
+TokenLens 3.2.1 · 五款助手灵动岛
 
 Mac：macOS 14 或更高版本。Apple M 系列选择 arm64；Intel 选择 x86_64。
 解压后双击「安装.command」，安装到个人 Applications 目录并开启助手联动。
@@ -10,6 +10,11 @@ Windows：Windows 10/11。普通 Intel / AMD 电脑选择 x64；骁龙等 Window
 Setup.exe 是安装版；zip 是免安装版，解压完整目录后启动 TokenLens.exe。
 在托盘中可切换助手、选择显示器、连接 DSH 状态桥和开启「开机启动」。
 Windows 没有 Mac 的黑色摄像头缺口，因此胶囊贴合可用屏幕顶部，并避让顶部任务栏。
+
+完成提醒：两端固定原生窗口，平稳展开后轻压回弹一次，软件对应的彩色光边在弹跳时亮起，停留时保留柔光。
+GPT / Codex、DeepSeek Harness 的明确新完成事件依次呈现，首次读取不重播历史。
+可固定展开、查看本次运行中最近 20 条完成记录、选择弹跳强度和提醒停留时间，也可关闭软件微光或跟随系统减少动态效果。
+WorkBuddy、Claude、CodeBuddy 尚无可靠完成事件时继续显示可读取状态，不猜测任务成功。
 
 数据说明：GPT 额度来自本机 .codex/sessions 日志，随新消息更新；普通 ChatGPT 网页或独立聊天客户端
 没有这些日志时，相关数据显示 --。DSH 余额来自 Harness 的账号接口。第三方余额不能替代订阅额度。

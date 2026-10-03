@@ -1,0 +1,127 @@
+{
+  "version": "3.2.1",
+  "date": "2026-10-03",
+  "nativePreview": "synthetic own-view render only; no real chats or desktop capture",
+  "nativeFrames": 480,
+  "palettes": 5,
+  "panels": 3,
+  "suite": [
+    "scanner",
+    "island geometry and completion FIFO/DSH lifecycle",
+    "monotonic opening/single rebound/continuous velocity/sustained edge glow/Reduce Motion",
+    "additional assistant telemetry",
+    "DeepSeek metrics"
+  ],
+  "nativeWindowChecks": {
+    "chatGPT": {
+      "samples": 96,
+      "oneWindowAdjustmentPerPresentation": true,
+      "cumulativeWindowAdjustmentCount": 1,
+      "surfaceTopEqualsCanvasAndCrown": true,
+      "stableHeldSize": [
+        446,
+        118
+      ],
+      "heldGlow": 0.38,
+      "haloAcceptsClicks": false,
+      "fixedNativeCanvasSize": [
+        506,
+        290
+      ]
+    },
+    "deepSeek": {
+      "samples": 96,
+      "oneWindowAdjustmentPerPresentation": true,
+      "cumulativeWindowAdjustmentCount": 2,
+      "surfaceTopEqualsCanvasAndCrown": true,
+      "stableHeldSize": [
+        446,
+        118
+      ],
+      "heldGlow": 0.38,
+      "haloAcceptsClicks": false,
+      "fixedNativeCanvasSize": [
+        506,
+        290
+      ]
+    },
+    "workBuddy": {
+      "samples": 96,
+      "oneWindowAdjustmentPerPresentation": true,
+      "cumulativeWindowAdjustmentCount": 3,
+      "surfaceTopEqualsCanvasAndCrown": true,
+      "stableHeldSize": [
+        446,
+        118
+      ],
+      "heldGlow": 0.38,
+      "haloAcceptsClicks": false,
+      "fixedNativeCanvasSize": [
+        506,
+        290
+      ]
+    },
+    "claude": {
+      "samples": 96,
+      "oneWindowAdjustmentPerPresentation": true,
+      "cumulativeWindowAdjustmentCount": 4,
+      "surfaceTopEqualsCanvasAndCrown": true,
+      "stableHeldSize": [
+        446,
+        118
+      ],
+      "heldGlow": 0.38,
+      "haloAcceptsClicks": false,
+      "fixedNativeCanvasSize": [
+        506,
+        290
+      ]
+    },
+    "codeBuddy": {
+      "samples": 96,
+      "oneWindowAdjustmentPerPresentation": true,
+      "cumulativeWindowAdjustmentCount": 5,
+      "surfaceTopEqualsCanvasAndCrown": true,
+      "stableHeldSize": [
+        446,
+        118
+      ],
+      "heldGlow": 0.38,
+      "haloAcceptsClicks": false,
+      "fixedNativeCanvasSize": [
+        506,
+        290
+      ]
+    }
+  },
+  "installation": {
+    "installedVersion": "3.2.1",
+    "signature": "passed",
+    "matchesProductionBuild": true,
+    "hashes": {
+      "Contents/MacOS/TokenLens": "f351be74b573142a23c7569a4720d56424aa2d7a49c7aeb93623e41110984c61",
+      "Contents/Helpers/TokenLensBridge": "8c2680d13413a98b7a21e9cc1271cf1a70d5c10c8bb0ad012b6ba7f6a38d8eae",
+      "Contents/Info.plist": "121379bd134d9ed3a4f5e842f6e6fb0183f793d507f36aa2add184fb4d71576f"
+    }
+  },
+  "liveClickQA": "Actual mouse-click verification not repeated in this run",
+  "automaticCompletionSources": [
+    "Codex",
+    "DeepSeek Harness"
+  ],
+  "otherAssistants": "No trustworthy completion event currently available; palettes are synthetic preview only",
+  "video": {
+    "frames": 480,
+    "durationSeconds": 16,
+    "resolution": "1360x760",
+    "fullDecode": "passed"
+  },
+  "gif": {
+    "frames": 240,
+    "durationSeconds": 16.0,
+    "resolution": [
+      900,
+      503
+    ]
+  }
+}

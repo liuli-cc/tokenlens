@@ -7,6 +7,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var errorMessage: String?
     @Published private(set) var completionNotice: TaskCompletionNotice?
+    @Published private(set) var recentCompletions: [TaskCompletionNotice] = []
+    @Published private(set) var pendingCompletionCount = 0
     @Published private(set) var activeAssistant: IslandAssistant = .chatGPT
     @Published private(set) var deepSeekStatus: DeepSeekStatusSnapshot
     @Published private(set) var deepSeekActivity = DeepSeekActivitySnapshot()
@@ -16,8 +18,7 @@ final class UsageStore: ObservableObject {
     private let deepSeekStatusReader = DeepSeekStatusReader()
     private let deepSeekActivityReader = DeepSeekActivityReader()
     private let additionalReader = AdditionalAssistantReader()
-    private var completionGates: [IslandAssistant: CompletionNoticeGate] = [:]
-    private var pendingNotices: [IslandAssistant: TaskCompletionNotice] = [:]
+    private var completionQueue = CompletionNoticeQueue()
     private let refreshEnabled: Bool
 
     init(scanner: CodexLogScanner = CodexLogScanner(), refreshEnabled: Bool = true) {
@@ -33,12 +34,14 @@ final class UsageStore: ObservableObject {
         isScanning = true
         Task {
             let refreshedAt = Date()
+            var completionBatches: [IslandAssistant: [TaskCompletionNotice]] = [:]
             async let activity = deepSeekActivityReader.read(now: refreshedAt)
             async let additional = additionalReader.read(now: refreshedAt)
             do {
                 let refreshedSnapshot = try await scanner.scan(now: refreshedAt)
                 snapshot = refreshedSnapshot
-                recordCompletion(refreshedSnapshot.latestCompletion, for: .chatGPT, now: refreshedAt)
+                completionBatches[.chatGPT] = completionBatch(refreshedSnapshot.completionEvents,
+                                                            latest: refreshedSnapshot.latestCompletion)
                 lastUpdated = refreshedAt
                 errorMessage = nil
             } catch {
@@ -52,23 +55,24 @@ final class UsageStore: ObservableObject {
                 failed.metricsSource = snapshot.metricsSource
                 failed.metricsDiagnostic = "本机读取失败：\(error.localizedDescription)；等待下次刷新"
                 snapshot = failed
-                pendingNotices.removeValue(forKey: .chatGPT)
             }
             deepSeekActivity = await activity
-            recordCompletion(deepSeekActivity.latestCompletion, for: .deepSeek, now: refreshedAt)
+            completionBatches[.deepSeek] = completionBatch(deepSeekActivity.completionEvents,
+                                                          latest: deepSeekActivity.latestCompletion)
             additionalSnapshots = await additional
             for assistant in [.workBuddy, .claude, .codeBuddy] as [IslandAssistant] {
-                recordCompletion(additionalSnapshots[assistant]?.latestCompletion, for: assistant, now: refreshedAt)
+                completionBatches[assistant] = completionBatch(additionalSnapshots[assistant]?.completionEvents ?? [],
+                                                              latest: additionalSnapshots[assistant]?.latestCompletion)
             }
+            completionQueue.observe(completionBatches, now: refreshedAt)
             synchronizeNotice()
             isScanning = false
         }
     }
 
     func dismissCompletionNotice(id: String) {
-        pendingNotices = pendingNotices.filter { $0.value.id != id }
-        guard completionNotice?.id == id else { return }
-        completionNotice = nil
+        completionQueue.dismiss(id: id)
+        synchronizeNotice()
     }
 
     func setActiveAssistant(_ assistant: IslandAssistant) {
@@ -78,7 +82,11 @@ final class UsageStore: ObservableObject {
     }
 
     var activeSnapshot: UsageSnapshot {
-        switch activeAssistant {
+        snapshot(for: activeAssistant)
+    }
+
+    func snapshot(for assistant: IslandAssistant) -> UsageSnapshot {
+        switch assistant {
         case .chatGPT: return snapshot
         case .deepSeek:
             var usage = deepSeekActivity.usageSnapshot
@@ -89,11 +97,11 @@ final class UsageStore: ObservableObject {
             usage.isTaskRunning = deepSeekActivity.isRunning
             return usage
         case .workBuddy, .claude, .codeBuddy:
-            if let data = additionalSnapshots[activeAssistant] { return data }
+            if let data = additionalSnapshots[assistant] { return data }
             var unavailable = UsageSnapshot.empty
             unavailable.currentModel = "模型未读取"
-            unavailable.currentProvider = activeAssistant.displayName
-            unavailable.currentSource = activeAssistant.displayName
+            unavailable.currentProvider = assistant.displayName
+            unavailable.currentSource = assistant.displayName
             unavailable.metricsDiagnostic = "尚未发现此软件的可读取用量数据"
             return unavailable
         }
@@ -129,15 +137,16 @@ final class UsageStore: ObservableObject {
         return data.quotaUpdatedAt == nil ? "未取得账户额度数据" : "额度缓存已过期，等待新的服务器数据"
     }
 
-    private func recordCompletion(_ completion: TaskCompletionNotice?, for assistant: IslandAssistant, now: Date) {
-        var gate = completionGates[assistant] ?? CompletionNoticeGate()
-        if let notice = gate.nextNotice(from: completion, now: now) { pendingNotices[assistant] = notice }
-        completionGates[assistant] = gate
+    private func completionBatch(_ completions: [TaskCompletionNotice], latest: TaskCompletionNotice?) -> [TaskCompletionNotice] {
+        completions.isEmpty ? latest.map { [$0] } ?? [] : completions
     }
 
     private func synchronizeNotice() {
-        pendingNotices = pendingNotices.filter { Date().timeIntervalSince($0.value.completedAt) < 90 }
-        let next = pendingNotices[activeAssistant]
+        let next = completionQueue.current
         if completionNotice != next { completionNotice = next }
+        if recentCompletions != completionQueue.recentCompletions {
+            recentCompletions = completionQueue.recentCompletions
+        }
+        if pendingCompletionCount != completionQueue.count { pendingCompletionCount = completionQueue.count }
     }
 }

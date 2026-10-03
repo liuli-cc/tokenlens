@@ -4,13 +4,15 @@
 <title>TokenLens</title><link rel="stylesheet" href="styles.css"></head>
 <body>
 <main id="island" aria-label="TokenLens 灵动岛">
-  <svg id="shape" aria-hidden="true"><path id="silhouette" fill="black"/></svg>
+  <svg id="shape" aria-hidden="true"><defs><linearGradient id="edgeGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" class="edgeStart"/><stop offset="100%" class="edgeEnd"/></linearGradient><filter id="softEdge" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter><clipPath id="surfaceClip"><path id="clipSilhouette"/></clipPath></defs><path id="edgeHalo" fill="none" stroke="url(#edgeGradient)" stroke-width="2" filter="url(#softEdge)"/><path id="silhouette" fill="black"/><path id="neutralEdge" fill="none" stroke="#ffffff" stroke-opacity=".12" stroke-width=".7"/><path id="edgeStroke" fill="none" stroke="url(#edgeGradient)" stroke-width="1.35"/></svg>
+  <div id="contentMask">
   <div id="crown"><button id="compactModel" data-action="open-assistant"><span id="modelPrimary">等待模型</span><span id="modelSecondary"></span></button>
     <span id="tinyActivity" aria-hidden="true"><i></i><i></i><i></i></span><button id="compactMetric" data-action="details">--</button></div>
   <section id="body"><div class="heading"><span id="activity"><i></i><i></i><i></i><span class="check">✓</span></span><div><h1 id="expandedModel"></h1><p id="taskState">等待任务</p></div><button class="balance" data-action="open-balance"><strong id="bigMetric">--</strong><span id="metricLabel">剩余额度</span></button></div>
     <div id="stats"><div><strong id="statOne">--</strong><span id="labelOne">今日 Token</span></div><div><strong id="statTwo">--</strong><span id="labelTwo">上下文</span></div><div><strong id="statThree">--</strong><span id="labelThree">缓存命中</span></div></div>
-    <footer><button data-action="open-assistant" id="returnButton">↗ 返回 GPT</button><button data-action="details">用量详情</button></footer>
+    <footer><button data-action="open-assistant" id="returnButton">↗ 返回 GPT</button><div class="islandTools"><button data-action="pin-expanded" id="pinButton" aria-label="固定展开" title="固定展开">固定</button><button data-action="details">详情与设置</button><button data-action="dismiss-notice" id="dismissButton" hidden aria-label="关闭提醒">关闭</button></div></footer>
   </section>
+  </div>
 </main>
 <main id="dashboard" hidden><nav><div><span class="brand">TokenLens</span><span id="version"></span></div><div class="tabs" aria-label="选择助手"><button data-action="select-gpt" data-assistant="gpt">GPT</button><button data-action="select-dsh" data-assistant="dsh">DSH</button><button data-action="select-workbuddy" data-assistant="workbuddy">WorkBuddy</button><button data-action="select-claude" data-assistant="claude">Claude</button><button data-action="select-codebuddy" data-assistant="codebuddy">CodeBuddy</button></div><button data-action="refresh">刷新</button></nav>
   <section class="hero"><div><span class="eyebrow" id="detailProvider"></span><h1 id="detailModel"></h1><p id="detailState"></p></div><div class="quota"><strong id="detailMetric"></strong><span id="detailMetricLabel"></span></div></section>
@@ -19,5 +21,7 @@
   <section class="card" id="historyCard"><div class="cardHead"><h2>最近 7 天</h2><span>Token 用量</span></div><div id="history"></div></section>
   <section class="card" id="modelsCard"><h2>模型用量</h2><div id="models"></div></section>
   <section class="card" id="dshCard" hidden><h2>DeepSeek Harness 状态</h2><p id="dshHelp"></p><button class="primary" data-action="connect-dsh">连接状态桥</button><p class="muted">余额来自 Harness 账号接口；任务反馈来自本机任务记录。</p></section>
+  <section class="card" id="noticesCard"><div class="cardHead"><h2>最近完成</h2><span id="queuedCount"></span></div><div id="notices"></div><p class="muted">保留本次打开以来的 20 条真实完成提醒，点击返回对应软件。</p></section>
+  <section class="card" id="settingsCard"><div class="cardHead"><h2>提醒与动效</h2><button data-action="preview-notice" class="accentButton">预览动效</button></div><div class="settingsGrid"><label>弹性质感<select id="motionStyle" data-preference="motionStyle"><option value="subtle">轻柔</option><option value="balanced">自然</option><option value="jelly">果冻</option></select></label><label>提醒停留<select id="noticeDuration" data-preference="noticeDuration"><option value="6">6 秒</option><option value="10">10 秒</option><option value="14">14 秒</option></select></label><label class="toggleSetting"><span>软件色边缘光</span><input id="glowPreference" type="checkbox" data-preference="glow"></label><label class="toggleSetting"><span>跟随系统减少动态效果</span><input id="followSystemMotion" type="checkbox" data-preference="followSystemMotion"></label><label class="toggleSetting"><span>固定展开</span><input id="expandedPinned" type="checkbox" data-preference="expandedPinned"></label></div></section>
   <p id="dataNote" class="muted"></p>
-</main><script src="lib/presentation.cjs"></script><script src="renderer.cjs"></script></body></html>
+</main><script src="lib/presentation.cjs"></script><script src="lib/geometry.cjs"></script><script src="renderer.cjs"></script></body></html>

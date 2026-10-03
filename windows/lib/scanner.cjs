@@ -5,6 +5,25 @@ const os = require('node:os');
 const { Decompress } = require('fzstd');
 
 const DAY = 86400000;
+const COMPLETION_FRESHNESS = 90000;
+const MAX_COMPLETION_EVENTS = 128;
+function recentCompletionEvents(events, now = Date.now()) {
+  const seen = new Set();
+  return events.filter(event => {
+    if (!event || typeof event.id !== 'string' || !event.id || !Number.isFinite(event.at)
+      || event.at <= 0 || event.at > now + 5000 || now - event.at > COMPLETION_FRESHNESS
+      || seen.has(event.id)) return false;
+    seen.add(event.id); return true;
+  }).sort((a,b) => a.at-b.at || a.id.localeCompare(b.id)).slice(-MAX_COMPLETION_EVENTS);
+}
+function recordCompletion(digest, notice) {
+  if (!Number.isFinite(notice.at) || notice.at <= 0) return;
+  if (digest.completion?.id === notice.id || digest.completionEvents.some(event => event.id === notice.id)) return;
+  digest.completion = notice;
+  digest.completionEvents.push(notice);
+  const newest = Math.max(...digest.completionEvents.map(event => event.at));
+  digest.completionEvents = recentCompletionEvents(digest.completionEvents, newest);
+}
 function dayKey(time) { const d = new Date(time); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function validCount(value) { return value!=null && String(value).trim()!=='' && Number.isSafeInteger(Number(value)) && Number(value)>=0; }
 function count(value) { const n = Number(value); return value != null && Number.isFinite(n) && n >= 0 ? n : 0; }
@@ -27,7 +46,7 @@ function effectiveQuota(primary,secondary,at,now) {
 function emptyDigest() {
   return { id: '', user: true, model: '', provider: 'openai', total: usage(), last: usage(),
     accumulated:usage(), tokenUsageKnown:false, cacheUsageKnown:false, samples:[],
-    days: {}, models: {}, quota: null, secondaryQuota:null, context: 0, at: 0, tokenAt:0, quotaAt: 0, running: false, completion: null };
+    days: {}, models: {}, quota: null, secondaryQuota:null, context: 0, at: 0, tokenAt:0, quotaAt: 0, running: false, completion: null, completionEvents: [] };
 }
 function consumeCodex(d, event) {
   const p = event.payload || {}, at = Date.parse(event.timestamp) || 0;
@@ -46,9 +65,9 @@ function consumeCodex(d, event) {
       d.running = false; d.turn = null; d.at = Math.max(d.at, at);
     } else if (p.type === 'task_complete') {
       const turn = p.turn_id || d.turn;
-      if (d.user && d.id && turn) d.completion = {
+      if (d.user && d.id && turn) recordCompletion(d, {
         id: `${d.id}|${turn}`, at: p.completed_at ? +p.completed_at * 1000 : at, model: d.model,
-        title: 'GPT 已完成本轮任务' };
+        title: 'GPT 已完成本轮任务' });
       d.running = false; d.turn = null; d.at = Math.max(d.at, at);
     } else if (p.type === 'token_count') {
       if(p.rate_limits && typeof p.rate_limits==='object') {
@@ -155,12 +174,13 @@ class CodexScanner {
       todayTokens: totals[dayKey(now)] || 0, history, models: Object.entries(models).map(([model,tokens]) => ({model,tokens,requests:requests[model],requestsKnown:true})).sort((a,b)=>b.tokens-a.tokens),
       running: user.some(d => d.running && now-d.at < 600000),
       completion: user.map(d=>d.completion).filter(Boolean).sort((a,b)=>b.at-a.at)[0] || null,
+      completionEvents: recentCompletionEvents(user.flatMap(d=>d.completionEvents), now),
       files: files.length, updatedAt: active.at || null, error: files.length ? null : '等待本机 Codex 会话记录' };
   }
 }
 
 function digestDeepSeek(lines) {
-  const d={user:false,id:'',running:false,completion:null,model:'等待 Harness',provider:'DeepSeek',context:0,
+  const d={user:false,id:'',running:false,completion:null,completionEvents:[],model:'等待 Harness',provider:'DeepSeek',context:0,
     usage:usage(),last:usage(),tokenUsageKnown:false,cacheUsageKnown:false,cacheComplete:true,samples:[],at:0,eventAt:0};
   const seen=new Set();let seedEnded=false;
   for(const line of lines.split('\n')) {
@@ -196,7 +216,7 @@ function digestDeepSeek(lines) {
     if(data.turn!=null){
       if(e.type==='turn/start'){d.running=true;d.turn=data.turn;}
       else if(e.type==='turn/end'){
-        if(data.reason?.kind==='completed' && d.id && Number.isFinite(e.time))d.completion={id:`dsh|${d.id}|${data.turn}`,at:e.time,title:'DeepSeek 已完成本轮任务'};
+        if(data.reason?.kind==='completed' && d.id && Number.isFinite(e.time))recordCompletion(d,{id:`dsh|${d.id}|${data.turn}`,at:e.time,title:'DeepSeek 已完成本轮任务'});
         if(d.turn===data.turn)d.running=false;
       }
     }
@@ -279,7 +299,8 @@ class DeepSeekScanner {
       history:Array.from({length:7},(_,i)=>{const date=new Date(historyStart);date.setDate(date.getDate()+i);const day=dayKey(date);return{day,tokens:totals[day]||0};}),models:Object.values(models).sort((a,b)=>b.tokens-a.tokens),
       remaining:null,quota:null,secondaryQuota:null,
       running:entries.some(x=>x.digest.running && now-x.mtime<600000),
-      completion:entries.map(x=>x.digest.completion).filter(Boolean).sort((a,b)=>b.at-a.at)[0]||null};
+      completion:entries.map(x=>x.digest.completion).filter(Boolean).sort((a,b)=>b.at-a.at)[0]||null,
+      completionEvents:recentCompletionEvents(digests.flatMap(d=>d.completionEvents),now)};
 
   }
 }
@@ -295,4 +316,4 @@ class CompletionGate {
     return notice.at <= now+5000 && now-notice.at<=90000;
   }
 }
-module.exports = { CodexScanner, DeepSeekScanner, CompletionGate, consumeCodex, emptyDigest, digestDeepSeek, decodeZstd, dataDirectory, readDeepSeekStatus, walletLabel, effectiveQuota };
+module.exports = { CodexScanner, DeepSeekScanner, CompletionGate, consumeCodex, emptyDigest, digestDeepSeek, decodeZstd, dataDirectory, readDeepSeekStatus, walletLabel, effectiveQuota, recentCompletionEvents };

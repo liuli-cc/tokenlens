@@ -20,6 +20,8 @@ parentPort.on('message',async message=>{
     gptStatus.external=external && usesExternal && provider===external.provider.toLowerCase() ? external:null;
     gptStatus.configuredBalance=external && usesExternal && !gptStatus.external ? external:null;
     if(usesExternal){gptStatus.remaining=null;gptStatus.quota=null;gptStatus.secondaryQuota=null;}
+    // Keep every explicit recent completion in the scan. The main process
+    // primes and consumes these batches, so several turns between polls survive.
     parentPort.postMessage({gpt:gptStatus,dsh:dshStatus,...additional.scan(now)});
   } catch { parentPort.postMessage({error:'本机记录暂不可读，稍后自动重试'}); }
   finally { busy=false; }

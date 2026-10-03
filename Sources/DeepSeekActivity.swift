@@ -3,6 +3,7 @@ import Foundation
 struct DeepSeekActivitySnapshot: Equatable, Sendable {
     var isRunning = false
     var latestCompletion: TaskCompletionNotice?
+    var completionEvents: [TaskCompletionNotice] = []
     var usageSnapshot: UsageSnapshot = .empty
 }
 
@@ -15,6 +16,7 @@ struct DeepSeekEventDigest: Sendable {
     var activeTurn: Int?
     var startedAt: Date?
     var latestCompletion: TaskCompletionNotice?
+    var completionEvents: [TaskCompletionNotice] = []
     var model = "等待 Harness"
     var provider = "DeepSeek"
     var contextWindow: Int64 = 0
@@ -97,12 +99,20 @@ struct DeepSeekEventDigest: Sendable {
         } else if envelope.type == "turn/end" {
             defer { if activeTurn == turn { activeTurn = nil; startedAt = nil } }
             guard envelope.data?.reason?.kind == "completed", let time, !sessionID.isEmpty else { return }
+            let identity = "dsh|\(sessionID)|\(turn)"
+            guard !completionEvents.contains(where: { $0.id == identity }) else { return }
             latestCompletion = TaskCompletionNotice(
-                id: "dsh|\(sessionID)|\(turn)", sessionID: sessionID, turnID: String(turn),
+                id: identity, sessionID: sessionID, turnID: String(turn),
                 title: "DeepSeek 已完成本轮任务", provider: "DeepSeek", model: "DeepSeek Harness",
                 source: "DeepSeek Harness", usage: usage - turnStartUsage, quotaUsedPercent: nil, costUSD: nil,
                 startedAt: startedAt ?? time, completedAt: time, usageKnown: turnUsageKnown
             )
+            if let completion = latestCompletion,
+               !completionEvents.contains(where: { $0.id == completion.id }) {
+                completionEvents.append(completion)
+                let newest = completionEvents.map(\.completedAt).max() ?? time
+                completionEvents = CompletionEventBatch.recent(completionEvents, now: newest)
+            }
         }
     }
 
@@ -175,6 +185,7 @@ actor DeepSeekActivityReader {
         return DeepSeekActivitySnapshot(
             isRunning: cache.values.contains { $0.digest.activeTurn != nil && now.timeIntervalSince($0.modified) < 600 },
             latestCompletion: cache.values.compactMap(\.digest.latestCompletion).max { $0.completedAt < $1.completedAt },
+            completionEvents: CompletionEventBatch.recent(cache.values.flatMap(\.digest.completionEvents), now: now),
             usageSnapshot: makeSnapshot(now: now)
         )
     }

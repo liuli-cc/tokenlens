@@ -19,6 +19,7 @@ struct ScannerSelfTest {
         try await testRunningAndAbortedLifecycle()
         try await testCompletionMetricsTitleAndSharedQuotaBaseline()
         try await testSubagentCompletionIsIgnored()
+        try await testCompletionBatches()
         try await testCCSwitchTaskCostSupportsSecondsAndMilliseconds()
         try await testCCSwitchInputSemantics()
         try await testConfiguredProviderDoesNotOverrideOfficialSession()
@@ -308,6 +309,83 @@ struct ScannerSelfTest {
             snapshot.latestCompletion?.id == "root-session|root-turn",
             "subagent completion replaced the user task completion"
         )
+    }
+
+    private static func testCompletionBatches() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tokenlens-batch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_790_769_600)
+        func event(_ type: String, _ payload: [String: Any], _ offset: Double) throws -> String {
+            let value: [String: Any] = ["type": type, "payload": payload,
+                "timestamp": now.addingTimeInterval(offset).ISO8601Format()]
+            return String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        }
+        func finish(_ turn: String, _ offset: Double) -> [String: Any] {
+            ["type": "task_complete", "turn_id": turn,
+             "completed_at": now.addingTimeInterval(offset).timeIntervalSince1970]
+        }
+        func tokens(_ total: Int) -> [String: Any] {
+            ["type": "token_count", "info": ["total_token_usage": ["input_tokens": total * 8 / 10,
+                "cached_input_tokens": total * 4 / 10, "output_tokens": total * 2 / 10, "total_tokens": total]]]
+        }
+        let main = root.appendingPathComponent("main.jsonl")
+        let mainEvents = try [
+            event("session_meta", ["id": "batch-main", "thread_source": "user", "model_provider": "openai"], -110),
+            event("turn_context", ["model": "gpt-fixture"], -109),
+            event("event_msg", finish("old", -100), -100),
+            event("event_msg", ["type": "task_started", "turn_id": "A"], -5),
+            event("event_msg", tokens(100), -4.5),
+            event("event_msg", finish("A", -4), -4),
+            event("event_msg", ["type": "task_started", "turn_id": "B"], -3),
+            event("event_msg", tokens(250), -2.5),
+            event("event_msg", finish("B", -2), -2),
+            event("event_msg", finish("A", -4), -1.8),
+            event("event_msg", ["type": "task_started", "turn_id": "aborted"], -1.5),
+            event("event_msg", ["type": "turn_aborted", "turn_id": "aborted"], -1)
+        ]
+        try Data((mainEvents.joined(separator: "\n") + "\n").utf8).write(to: main)
+        let peer = try [
+            event("session_meta", ["id": "batch-peer", "thread_source": "user", "model_provider": "custom"], -6),
+            event("turn_context", ["model": "external-fixture"], -5.5),
+            event("event_msg", finish("peer", -3.5), -3.5)
+        ]
+        try Data((peer.joined(separator: "\n") + "\n").utf8).write(to: root.appendingPathComponent("peer.jsonl"))
+        let child = try [
+            event("session_meta", ["id": "batch-child", "thread_source": "subagent", "source": ["subagent": [:]]], -6),
+            event("event_msg", finish("child", -0.5), -0.5)
+        ]
+        try Data((child.joined(separator: "\n") + "\n").utf8).write(to: root.appendingPathComponent("child.jsonl"))
+        let scanner = CodexLogScanner(sessionsRoot: root,
+            ccSwitchScanner: CCSwitchScanner(databaseURL: root.appendingPathComponent("missing.db")),
+            threadTitleStore: CodexThreadTitleStore(codexRoot: root.appendingPathComponent("missing-state")))
+        let first = try await scanner.scan(now: now)
+        try expect(first.completionEvents.map(\.id) == ["batch-main|A", "batch-peer|peer", "batch-main|B"],
+                   "Same-log or concurrent completion was lost, duplicated, unsorted or polluted by a subagent")
+        try expect(first.latestCompletion?.id == "batch-main|B", "Completion batch changed the legacy latest success")
+        try expect(first.completionEvents[0].usage.totalTokens == 100 && first.completionEvents[2].usage.totalTokens == 150,
+                   "Completion batching changed per-turn token usage")
+        try expect(first.completionEvents[1].source == "CC Switch" && first.completionEvents[1].costUSD == nil
+                   && !first.completionEvents[1].usageKnown && first.completionEvents[1].usageDisplayValue == "--",
+                   "Earlier external completion acquired a fabricated cost or measured token count")
+        let cached = try await scanner.scan(now: now)
+        try expect(cached.completionEvents == first.completionEvents, "Unchanged logs produced an unstable completion batch")
+        let handle = try FileHandle(forWritingTo: main)
+        try handle.seekToEnd()
+        let append = try [
+            event("event_msg", ["type": "task_started", "turn_id": "C"], 1),
+            event("event_msg", tokens(300), 1.5),
+            event("event_msg", finish("C", 2), 2)
+        ]
+        try handle.write(contentsOf: Data((append.joined(separator: "\n") + "\n").utf8))
+        try handle.close()
+        let updated = try await scanner.scan(now: now.addingTimeInterval(3))
+        try expect(updated.completionEvents.map(\.id) == first.completionEvents.map(\.id) + ["batch-main|C"],
+                   "Incremental scan dropped an earlier unpresented completion")
+        try expect(updated.completionEvents.last?.usage.totalTokens == 50, "Incremental completion usage was not kept per turn")
+        let expired = try await scanner.scan(now: now.addingTimeInterval(100))
+        try expect(expired.completionEvents.isEmpty && expired.latestCompletion?.id == "batch-main|C",
+                   "Completion batch freshness erased legacy metadata or replayed stale events")
     }
 
     private static func testCCSwitchTaskCostSupportsSecondsAndMilliseconds() async throws {

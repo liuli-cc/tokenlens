@@ -31,12 +31,21 @@ swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-l
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/IslandGeometry.swift" \
+  "$project_dir/Sources/CompletionNoticeQueue.swift" \
   "$project_dir/Sources/IslandCompactText.swift" \
   "$project_dir/Sources/MenuBarOccupancy.swift" \
   "$project_dir/Sources/DeepSeekActivity.swift" \
   "$project_dir/Tests/IslandSelfTest.swift" \
   -o "$island_test"
 "$island_test"
+
+experience_test="$build_cache/TokenLensExperienceSelfTest"
+swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  -target "$(uname -m)-apple-macosx14.0" \
+  "$project_dir/Sources/IslandExperience.swift" \
+  "$project_dir/Tests/IslandExperienceSelfTest.swift" \
+  -o "$experience_test"
+"$experience_test"
 
 additional_test="$build_cache/TokenLensAdditionalSelfTest"
 swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-library \

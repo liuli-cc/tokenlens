@@ -152,6 +152,28 @@ struct CompletionNoticeGate: Sendable {
     }
 }
 
+enum CompletionEventBatch {
+    static let maximumCount = 128
+    static let freshness: TimeInterval = 90
+
+    /// Stable chronological metadata batches, including concurrent sessions.
+    /// No chat content or inferred success state is added here.
+    static func recent(_ completions: [TaskCompletionNotice], now: Date,
+                       freshness: TimeInterval = CompletionEventBatch.freshness) -> [TaskCompletionNotice] {
+        var unique: [String: TaskCompletionNotice] = [:]
+        for completion in completions {
+            let age = now.timeIntervalSince(completion.completedAt)
+            guard age >= -5, age <= freshness else { continue }
+            unique[completion.source + "|" + completion.id] = completion
+        }
+        let sorted = unique.values.sorted {
+            if $0.completedAt != $1.completedAt { return $0.completedAt < $1.completedAt }
+            return $0.id < $1.id
+        }
+        return Array(sorted.suffix(maximumCount))
+    }
+}
+
 struct DayUsage: Identifiable, Equatable, Sendable {
     let date: Date
     let usage: TokenUsage
@@ -197,6 +219,7 @@ struct UsageSnapshot: Equatable, Sendable {
     var lastEventAt: Date?
     var filesObserved: Int = 0
     var latestCompletion: TaskCompletionNotice? = nil
+    var completionEvents: [TaskCompletionNotice] = []
     var isTaskRunning = false
     // Missing metadata is deliberately distinct from a measured zero.
     var tokenUsageKnown = false

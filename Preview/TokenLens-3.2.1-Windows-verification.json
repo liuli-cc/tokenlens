@@ -1,0 +1,437 @@
+{
+  "passed": true,
+  "version": "3.2.1",
+  "platform": "darwin",
+  "arch": "arm64",
+  "native": false,
+  "gpt": {
+    "assistant": "gpt",
+    "today": "64.6M",
+    "cache": "89%",
+    "model": "gpt-6-luna",
+    "metric": "26%",
+    "expanded": true,
+    "complete": false,
+    "symmetry": true,
+    "canvas": [
+      508,
+      234
+    ],
+    "surface": [
+      460,
+      200
+    ],
+    "glow": 0,
+    "glowAssistant": null,
+    "rimOpacity": 0,
+    "haloOpacity": 0,
+    "reduceMotion": false,
+    "textWidth": 460
+  },
+  "dsh": {
+    "assistant": "dsh",
+    "today": "--",
+    "cache": "--",
+    "model": "DeepSeek-V41-Flash",
+    "metric": "¥25.80",
+    "expanded": true,
+    "complete": true,
+    "symmetry": true,
+    "canvas": [
+      508,
+      234
+    ],
+    "surface": [
+      460,
+      200
+    ],
+    "glow": 0.38,
+    "glowAssistant": "dsh",
+    "rimOpacity": 0.3496,
+    "haloOpacity": 0.2964,
+    "reduceMotion": false,
+    "textWidth": 460
+  },
+  "workbuddy": {
+    "assistant": "workbuddy",
+    "today": "12K",
+    "cache": "50%",
+    "model": "reported-workbuddy-model",
+    "metric": "--",
+    "expanded": true,
+    "complete": false,
+    "symmetry": true,
+    "canvas": [
+      508,
+      234
+    ],
+    "surface": [
+      460,
+      200
+    ],
+    "glow": 0.38,
+    "glowAssistant": "dsh",
+    "rimOpacity": 0.3496,
+    "haloOpacity": 0.2964,
+    "reduceMotion": false,
+    "textWidth": 460
+  },
+  "claude": {
+    "assistant": "claude",
+    "today": "--",
+    "cache": "--",
+    "model": "Claude · 模型未提供",
+    "metric": "--",
+    "expanded": true,
+    "complete": false,
+    "symmetry": true,
+    "canvas": [
+      508,
+      234
+    ],
+    "surface": [
+      460,
+      200
+    ],
+    "glow": 0.38,
+    "glowAssistant": "dsh",
+    "rimOpacity": 0.3496,
+    "haloOpacity": 0.2964,
+    "reduceMotion": false,
+    "textWidth": 460
+  },
+  "codebuddy": {
+    "assistant": "codebuddy",
+    "today": "36K",
+    "cache": "62.5%",
+    "model": "reported-codebuddy-model",
+    "metric": "--",
+    "expanded": true,
+    "complete": false,
+    "symmetry": true,
+    "canvas": [
+      508,
+      234
+    ],
+    "surface": [
+      460,
+      200
+    ],
+    "glow": 0.38,
+    "glowAssistant": "dsh",
+    "rimOpacity": 0.3496,
+    "haloOpacity": 0.2964,
+    "reduceMotion": false,
+    "textWidth": 460
+  },
+  "completionMotion": {
+    "canvasChanges": 0,
+    "samples": [
+      {
+        "elapsed": 0,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": false,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          280,
+          36
+        ],
+        "glow": 0.38,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.3496,
+        "haloOpacity": 0.2964,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 0.21,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          370,
+          118
+        ],
+        "glow": 0.5,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.46,
+        "haloOpacity": 0.39,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 0.42,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          460,
+          200
+        ],
+        "glow": 1,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.92,
+        "haloOpacity": 0.78,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 0.55,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          460,
+          200
+        ],
+        "glow": 1,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.92,
+        "haloOpacity": 0.78,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 0.7,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          464,
+          196.5
+        ],
+        "glow": 1,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.92,
+        "haloOpacity": 0.78,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 0.94,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          458.6,
+          201.225
+        ],
+        "glow": 1,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.92,
+        "haloOpacity": 0.78,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 1.16,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          460,
+          200
+        ],
+        "glow": 0.9839687500000001,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.9052512500000001,
+        "haloOpacity": 0.7674956250000001,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 1.9,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          460,
+          200
+        ],
+        "glow": 0.38,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.3496,
+        "haloOpacity": 0.2964,
+        "reduceMotion": false,
+        "textWidth": 460
+      },
+      {
+        "elapsed": 2.4,
+        "assistant": "dsh",
+        "today": "--",
+        "cache": "--",
+        "model": "DeepSeek-V41-Flash",
+        "metric": "¥25.80",
+        "expanded": true,
+        "complete": true,
+        "symmetry": true,
+        "canvas": [
+          508,
+          234
+        ],
+        "surface": [
+          460,
+          200
+        ],
+        "glow": 0.38,
+        "glowAssistant": "dsh",
+        "rimOpacity": 0.3496,
+        "haloOpacity": 0.2964,
+        "reduceMotion": false,
+        "textWidth": 460
+      }
+    ],
+    "held": {
+      "elapsed": 2.4,
+      "assistant": "dsh",
+      "today": "--",
+      "cache": "--",
+      "model": "DeepSeek-V41-Flash",
+      "metric": "¥25.80",
+      "expanded": true,
+      "complete": true,
+      "symmetry": true,
+      "canvas": [
+        508,
+        234
+      ],
+      "surface": [
+        460,
+        200
+      ],
+      "glow": 0.38,
+      "glowAssistant": "dsh",
+      "rimOpacity": 0.3496,
+      "haloOpacity": 0.2964,
+      "reduceMotion": false,
+      "textWidth": 460
+    },
+    "reduceMotion": {
+      "assistant": "dsh",
+      "today": "--",
+      "cache": "--",
+      "model": "DeepSeek-V41-Flash",
+      "metric": "¥25.80",
+      "expanded": true,
+      "complete": true,
+      "symmetry": true,
+      "canvas": [
+        508,
+        234
+      ],
+      "surface": [
+        460,
+        200
+      ],
+      "glow": 0.38,
+      "glowAssistant": "dsh",
+      "rimOpacity": 0.3496,
+      "haloOpacity": 0.2964,
+      "reduceMotion": true,
+      "textWidth": 460
+    },
+    "fading": {
+      "assistant": "gpt",
+      "today": "64.6M",
+      "cache": "89%",
+      "model": "gpt-6-luna",
+      "metric": "26%",
+      "expanded": true,
+      "complete": false,
+      "symmetry": true,
+      "canvas": [
+        508,
+        234
+      ],
+      "surface": [
+        460,
+        200
+      ],
+      "glow": 0.2,
+      "glowAssistant": "dsh",
+      "rimOpacity": 0.18400000000000002,
+      "haloOpacity": 0.15600000000000003,
+      "reduceMotion": false,
+      "textWidth": 460
+    },
+    "haloAcceptsClicks": false,
+    "nativeCanvasSize": [
+      508,
+      234
+    ]
+  },
+  "verificationScope": "Synthetic production Electron renderer on macOS; Win32 and packaged Windows verification is run by release CI",
+  "syntheticDataOnly": true
+}

@@ -10,8 +10,9 @@ struct IslandSelfTest {
         try testAssistantPriority()
         try testSpring()
         try testDeepSeekEvents()
+        try testCompletionQueue()
         try await testCompressedReader()
-        print("Island self-tests passed: camera-attached geometry, menu exclusions, interruptible spring, DSH lifecycle and compressed reader")
+        print("Island self-tests passed: camera-attached geometry, menu exclusions, interruptible spring, completion FIFO and DSH lifecycle")
     }
 
     private static func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
@@ -158,6 +159,7 @@ struct IslandSelfTest {
             digest.consume(Data("{\"type\":\"turn/end\",\"time\":2000,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"\(reason)\"}}}".utf8))
             try check(digest.activeTurn == nil, "End event did not clear task running")
             try check((digest.latestCompletion != nil) == (reason == "completed"), "Non-success was announced as completed: \(reason)")
+            try check(digest.completionEvents.count == (reason == "completed" ? 1 : 0), "Non-success entered the completion batch")
             if let notice = digest.latestCompletion {
                 try check(notice.id == "dsh|test|1" && notice.isDeepSeek, "Wrong DSH completion identity")
                 try check(notice.startedAt == Date(timeIntervalSince1970: 1) && notice.completedAt == Date(timeIntervalSince1970: 2), "Millisecond timestamps not decoded")
@@ -167,7 +169,113 @@ struct IslandSelfTest {
         child.consume(Data(#"{"type":"session","version":4,"id":"child","delegationDepth":1}"#.utf8))
         child.consume(Data(#"{"type":"turn/end","time":2000,"data":{"turn":1,"reason":{"kind":"completed"}}}"#.utf8))
         try check(child.latestCompletion == nil, "Subagent completion escaped into user feedback")
+        try check(child.completionEvents.isEmpty, "Subagent completion entered the event batch")
         child.consume(Data("partial json".utf8))
+    }
+
+    private static func notice(_ id: String, assistant: IslandAssistant, at: Date,
+                               usageKnown: Bool = false) -> TaskCompletionNotice {
+        TaskCompletionNotice(id: id, sessionID: "synthetic", turnID: id,
+            title: "合成测试任务", provider: assistant.displayName, model: "fixture-model",
+            source: assistant == .chatGPT ? "Codex" : assistant.displayName,
+            usage: .zero, quotaUsedPercent: nil, costUSD: nil,
+            startedAt: at.addingTimeInterval(-1), completedAt: at, usageKnown: usageKnown)
+    }
+
+    private static func testCompletionQueue() throws {
+        let baseline = Date(timeIntervalSince1970: 1_790_769_600)
+        var queue = CompletionNoticeQueue()
+        for assistant in IslandAssistant.allCases {
+            queue.observe(notice("startup-\(assistant.rawValue)", assistant: assistant,
+                                 at: baseline.addingTimeInterval(-1)), for: assistant, now: baseline)
+        }
+        try check(queue.current == nil && queue.recentCompletions.isEmpty, "Startup history replayed as a new completion")
+        let first = notice("gpt-first", assistant: .chatGPT, at: baseline.addingTimeInterval(1))
+        let second = notice("dsh-second", assistant: .deepSeek, at: baseline.addingTimeInterval(2))
+        let third = notice("gpt-third", assistant: .chatGPT, at: baseline.addingTimeInterval(3))
+        let now = baseline.addingTimeInterval(4)
+        queue.observe(first, for: .chatGPT, now: now)
+        queue.observe(second, for: .deepSeek, now: now)
+        queue.observe(third, for: .chatGPT, now: now)
+        try check(queue.current == first && queue.count == 3, "Cross-provider or same-provider completions overwrote the FIFO")
+        try check(queue.recentCompletions.map(\.id) == [third.id, second.id, first.id], "Recent completion order lost metadata")
+        try check(queue.current?.usageDisplayValue == "--" && queue.current?.usageKnown == false,
+                  "Completion history manufactured a measured token count")
+        queue.observe(first, for: .chatGPT, now: now)
+        queue.observe(third, for: .chatGPT, now: now)
+        try check(queue.count == 3, "Alternating cached completion IDs replayed a duplicate")
+        queue.dismiss(id: second.id, now: now)
+        try check(queue.current == first && queue.count == 3, "A stale timeout dismissed a waiting notice")
+        queue.dismiss(id: first.id, now: now)
+        try check(queue.current == second && queue.count == 2, "Dismissing the head failed to immediately advance to the next assistant")
+        queue.dismiss(id: second.id, now: baseline.addingTimeInterval(100))
+        try check(queue.current == third, "An already accepted notice expired at the ingestion freshness boundary")
+        queue.dismiss(id: third.id, now: baseline.addingTimeInterval(100))
+        try check(queue.current == nil && queue.count == 0 && queue.recentCompletions.count == 3,
+                  "Dismissing a notice erased the in-memory history")
+        queue.observe(first, for: .chatGPT, now: now)
+        queue.observe(notice("old-session", assistant: .chatGPT, at: baseline.addingTimeInterval(-0.5)),
+                      for: .chatGPT, now: now)
+        queue.observe(notice("stale", assistant: .chatGPT, at: baseline.addingTimeInterval(5)),
+                      for: .chatGPT, now: baseline.addingTimeInterval(100))
+        queue.observe(notice("future", assistant: .chatGPT, at: baseline.addingTimeInterval(110)),
+                      for: .chatGPT, now: baseline.addingTimeInterval(100))
+        try check(queue.current == nil && queue.recentCompletions.count == 3,
+                  "Duplicate, pre-startup, stale or future completion escaped the gate")
+
+        var emptySeed = CompletionNoticeQueue()
+        emptySeed.observe(nil, for: .deepSeek, now: baseline)
+        emptySeed.observe(second, for: .deepSeek, now: now)
+        try check(emptySeed.current == second, "An empty first read incorrectly swallowed the next fresh event")
+
+        var batchSeed = CompletionNoticeQueue()
+        batchSeed.observe([third, first, second], for: .chatGPT, now: now)
+        batchSeed.observe([first, second, third], for: .chatGPT, now: now)
+        try check(batchSeed.count == 0 && batchSeed.recentCompletions.isEmpty,
+                  "Only the first event of a startup batch was suppressed")
+        let fourth = notice("batch-fourth", assistant: .chatGPT, at: baseline.addingTimeInterval(6))
+        let fifth = notice("batch-fifth", assistant: .chatGPT, at: baseline.addingTimeInterval(7))
+        batchSeed.observe([fifth, fourth, first], for: .chatGPT, now: baseline.addingTimeInterval(8))
+        try check(batchSeed.current == fourth && batchSeed.count == 2,
+                  "Batch ingestion lost or reordered simultaneous completions")
+        batchSeed.dismiss(id: fourth.id, now: baseline.addingTimeInterval(8))
+        try check(batchSeed.current == fifth, "The next completion in one poll did not advance")
+
+        var providers = CompletionNoticeQueue()
+        providers.observe([.chatGPT: [], .deepSeek: []], now: baseline)
+        providers.observe([.chatGPT: [third, first], .deepSeek: [second]], now: now)
+        try check(providers.current == first && providers.count == 3,
+                  "Concurrent provider polling did not preserve the earliest completed task")
+        providers.dismiss(id: first.id, now: now)
+        try check(providers.current == second, "Dictionary iteration reordered cross-provider completions")
+        providers.dismiss(id: second.id, now: now)
+        try check(providers.current == third, "A second completion for the same provider was overwritten in a merged poll")
+
+        var coarseTime = CompletionNoticeQueue()
+        coarseTime.observe([], for: .chatGPT, now: baseline.addingTimeInterval(0.8))
+        let withinStartupSecond = notice("coarse-new-turn", assistant: .chatGPT, at: baseline)
+        coarseTime.observe(withinStartupSecond, for: .chatGPT, now: baseline.addingTimeInterval(1.2))
+        try check(coarseTime.current == withinStartupSecond, "Whole-second completion timestamps lost a new turn at startup")
+
+        var bounded = CompletionNoticeQueue(historyLimit: 2, pendingLimit: 3, deduplicationLimit: 4,
+                                            pendingRetention: 30)
+        bounded.observe(nil, for: .chatGPT, now: baseline)
+        for index in 1...6 {
+            let at = baseline.addingTimeInterval(Double(index))
+            bounded.observe(notice("bounded-\(index)", assistant: .chatGPT, at: at), for: .chatGPT, now: at)
+        }
+        try check(bounded.current?.id == "bounded-1" && bounded.count == 3,
+                  "Backlog bound interrupted the notice already presented")
+        try check(bounded.recentCompletions.map(\.id) == ["bounded-6", "bounded-5"], "Recent history was not bounded")
+        // This ID has left the small deduplication set, but is still on screen.
+        bounded.observe(notice("bounded-1", assistant: .chatGPT, at: baseline.addingTimeInterval(1)),
+                        for: .chatGPT, now: baseline.addingTimeInterval(7))
+        try check(bounded.count == 3, "Deduplication eviction replayed an active notice")
+        bounded.observe(nil, for: .chatGPT, now: baseline.addingTimeInterval(40))
+        try check(bounded.count == 1 && bounded.current?.id == "bounded-1",
+                  "Backlog retention either kept expired waiting notices or interrupted the current notice")
+        bounded.dismiss(id: "bounded-1", now: baseline.addingTimeInterval(40))
+        try check(bounded.current == nil, "Expired backlog resumed after dismissing the current notice")
     }
 
     private static func testCompressedReader() async throws {
@@ -179,8 +287,15 @@ struct IslandSelfTest {
         let now = Date()
         let content = """
         {"type":"session","version":4,"id":"fixture","delegationDepth":0}
-        {"type":"turn/start","time":\(now.timeIntervalSince1970 * 1000 - 1000),"data":{"turn":1}}
-        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000),"data":{"turn":1,"reason":{"kind":"completed"}}}
+        {"type":"turn/start","time":\(now.timeIntervalSince1970 * 1000 - 120000),"data":{"turn":0}}
+        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000 - 119000),"data":{"turn":0,"reason":{"kind":"completed"}}}
+        {"type":"turn/start","time":\(now.timeIntervalSince1970 * 1000 - 5000),"data":{"turn":1}}
+        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000 - 4000),"data":{"turn":1,"reason":{"kind":"completed"}}}
+        {"type":"turn/start","time":\(now.timeIntervalSince1970 * 1000 - 3000),"data":{"turn":2}}
+        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000 - 2000),"data":{"turn":2,"reason":{"kind":"completed"}}}
+        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000 - 4000),"data":{"turn":1,"reason":{"kind":"completed"}}}
+        {"type":"turn/start","time":\(now.timeIntervalSince1970 * 1000 - 1000),"data":{"turn":3}}
+        {"type":"turn/end","time":\(now.timeIntervalSince1970 * 1000),"data":{"turn":3,"reason":{"kind":"aborted"}}}
 
         """
         try content.write(to: plain, atomically: true, encoding: .utf8)
@@ -194,8 +309,22 @@ struct IslandSelfTest {
         try check(process.terminationStatus == 0, "Unable to create synthetic DSH fixture")
         let reader = DeepSeekActivityReader(root: root)
         let result = await reader.read(now: now)
-        try check(!result.isRunning && result.latestCompletion?.id == "dsh|fixture|1", "Compressed log did not produce expected lifecycle")
+        try check(!result.isRunning && result.latestCompletion?.id == "dsh|fixture|2", "Compressed log did not produce expected lifecycle")
+        try check(result.completionEvents.map(\.id) == ["dsh|fixture|1", "dsh|fixture|2"],
+                  "DSH compressed reader lost a turn between polls or included stale/aborted success")
+        var queue = CompletionNoticeQueue()
+        queue.observe([], for: .deepSeek, now: now.addingTimeInterval(-10))
+        queue.observe(result.completionEvents, for: .deepSeek, now: now)
+        try check(queue.current?.id == "dsh|fixture|1" && queue.count == 2,
+                  "DSH completion batch did not enter the presentation FIFO")
         let cached = await reader.read(now: now)
         try check(cached == result, "Unmodified compressed log cache changed")
+        queue.observe(cached.completionEvents, for: .deepSeek, now: now)
+        try check(queue.count == 2, "Cached DSH completion batch was re-announced")
+        queue.dismiss(id: "dsh|fixture|1", now: now)
+        try check(queue.current?.id == "dsh|fixture|2", "Second DSH completion from the same poll was overwritten")
+        let expired = await reader.read(now: now.addingTimeInterval(100))
+        try check(expired.completionEvents.isEmpty && expired.latestCompletion?.id == "dsh|fixture|2",
+                  "DSH batch freshness lost legacy metadata or retained old events")
     }
 }
