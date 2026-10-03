@@ -61,3 +61,5 @@ Windows 36 项检查通过，打包后的 x64 程序已在 Windows CI 启动并�
 [3.2.1 正式发行版](https://github.com/liuli-cc/tokenlens/releases/tag/v3.2.1)已提供 Mac arm64 / x86_64、Windows x64 / arm64 的六个下载包及校验文件。[四架构发布检查](https://github.com/liuli-cc/tokenlens/actions/runs/37124807573)全部通过。
 
 3.2.2 本机已安装，签名及联动服务检查通过。五套本机检查与 23 条原生合成点击路由检查通过；Windows 36 项回归检查通过。摄像头真实鼠标点击因本机锁屏未完成验收，合成事件没有注入系统，也不代表硬件点击已验证。详见[3.2.2 点击验证记录](../Preview/TokenLens-3.2.2-click-verification.json)。
+
+[3.2.2 正式发行版](https://github.com/liuli-cc/tokenlens/releases/tag/v3.2.2)的六个平台下载包及校验文件已发布。[四架构检查](https://github.com/liuli-cc/tokenlens/actions/runs/37127991458)全部通过，Windows x64 打包程序新增的顶部点击、DSH 提醒来源和额度按钮优先级检查通过。该检查使用原生激活替身，未验证真实助手窗口恢复；Windows ARM64 仍是交叉构建与包架构检查。

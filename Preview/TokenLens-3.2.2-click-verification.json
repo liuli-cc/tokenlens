@@ -14,7 +14,6 @@
       "no-camera display does not activate"
     ],
     "installedVersion": "3.2.2",
-    "installedMatchesPortableBuild": true,
     "signatureVerified": true,
     "bridgeRunning": true,
     "hardwareCameraClickVerified": false,
@@ -24,11 +23,35 @@
       "Helpers/TokenLensBridge": "102c07f2d2334ae80c42e8a328b4bcd286fa696737e88f723cf6a782427f7273",
       "Helpers/zstd": "82178d9a058a9bd555e1810bc9f7eb239fa73476336be4032c44ec26e13d6017",
       "Info.plist": "44e8f0e03fb9dfa0769e6bf8fbebe6b0662bafb3d51d1d424a57b16072ef0ce9"
-    }
+    },
+    "installedMatchesLocalPortableBuild": true
   },
   "windows": {
     "unitTestsPassed": 36,
     "packagedRendererClickCheck": "Runs in Windows x64 release CI: current GPT, DSH completion origin, exactly one activation, metric details priority",
-    "ARM64HardwareVerified": false
+    "ARM64HardwareVerified": false,
+    "packagedRendererClickPassed": true,
+    "navigation": {
+      "activationCalls": [
+        "gpt",
+        "dsh"
+      ],
+      "metricOpensDetails": true
+    },
+    "nativeBridgeAvailable": true,
+    "verificationScope": "Shipped renderer DOM clicks through IPC into a native activation spy; actual assistant window restoration not tested"
+  },
+  "release": {
+    "sourceCommit": "bb4d01b5fb0169b8608baadba6781ddc8bd2bbb4",
+    "ciRun": "https://github.com/liuli-cc/tokenlens/actions/runs/37127991458",
+    "ciConclusion": "success",
+    "architectures": [
+      "macOS arm64",
+      "macOS x86_64",
+      "Windows x64",
+      "Windows arm64"
+    ],
+    "publishedPackageCount": 6,
+    "url": "https://github.com/liuli-cc/tokenlens/releases/tag/v3.2.2"
   }
 }
