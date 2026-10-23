@@ -38,10 +38,26 @@ struct RateLimitWindow: Equatable, Sendable {
     var windowMinutes: Int
     var resetsAt: Date?
     var planType: String?
+    var sampledAt: Date? = nil
+    // Sources that sample rarely (Claude's local history) may opt into a longer
+    // bound; anything older than the default is shown with its sample time.
+    var maxAge: TimeInterval = RateLimitWindow.liveAge
+
+    static let liveAge: TimeInterval = 900
 
     var remainingPercent: Double {
         min(100, max(0, 100 - usedPercent))
     }
+}
+
+struct QuotaPeriodMetric: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let compactTitle: String
+    let window: RateLimitWindow?
+    var delayedSampleAt: Date? = nil
+    var value: String { window?.remainingPercent.oneDecimalPercent ?? "--" }
+    var sampleNote: String? { delayedSampleAt.map { "采样于 " + $0.formatted(date: .omitted, time: .shortened) } }
 }
 
 struct ProviderBalance: Equatable, Sendable {
@@ -232,6 +248,9 @@ struct UsageSnapshot: Equatable, Sendable {
     var recentRequestCount: Int? = nil
     var secondaryQuota: RateLimitWindow? = nil
     var quotaUpdatedAt: Date? = nil
+    // Claude's compact history/visible UI reports utilization without a reset.
+    // This explicit opt-in retains the 15-minute freshness bound.
+    var quotaResetTimeUnavailable = false
     var quotaLimitID: String? = nil
     var quotaLimitName: String? = nil
     var requestCountIsLowerBound = true
@@ -254,12 +273,39 @@ struct UsageSnapshot: Equatable, Sendable {
 
     /// Account quota is a sampled server report, never a token-derived estimate.
     /// A reset that has already passed cannot imply the account has 100% left.
+    func freshQuotaWindows(now: Date = Date()) -> [RateLimitWindow] {
+        [quota, secondaryQuota].compactMap { $0 }.filter { window in
+            guard let sampledAt = window.sampledAt ?? quotaUpdatedAt,
+                  now.timeIntervalSince(sampledAt) >= -5, now.timeIntervalSince(sampledAt) <= window.maxAge else { return false }
+            return window.resetsAt.map { $0 > now } ?? quotaResetTimeUnavailable
+        }
+    }
     func effectiveQuota(now: Date = Date()) -> RateLimitWindow? {
-        guard let sampledAt = quotaUpdatedAt, now.timeIntervalSince(sampledAt) >= -5,
-              now.timeIntervalSince(sampledAt) <= 900 else { return nil }
-        return [quota, secondaryQuota].compactMap { $0 }
-            .filter { $0.resetsAt.map { $0 > now } ?? false }
+        freshQuotaWindows(now: now)
             .min { $0.remainingPercent < $1.remainingPercent }
+    }
+    var separatesQuotaPeriods: Bool {
+        currentSource.hasPrefix("Claude") || (quota != nil && secondaryQuota != nil)
+    }
+    func quotaPeriods(now: Date = Date()) -> [QuotaPeriodMetric] {
+        let raw = [quota, secondaryQuota].compactMap { $0 }
+        let fresh = freshQuotaWindows(now: now)
+        let shortMinutes = raw.first(where: { $0.windowMinutes < 10_080 })?.windowMinutes ?? 300
+        let title = shortMinutes == 1_440 ? "每日" : (shortMinutes % 60 == 0 ? "\(shortMinutes / 60)小时" : "\(shortMinutes)分钟")
+        let compact = shortMinutes == 1_440 ? "日" : (shortMinutes % 60 == 0 ? "\(shortMinutes / 60)h" : "\(shortMinutes)m")
+        func delayed(_ window: RateLimitWindow?) -> Date? {
+            guard let window, let at = window.sampledAt ?? quotaUpdatedAt,
+                  now.timeIntervalSince(at) > RateLimitWindow.liveAge else { return nil }
+            return at
+        }
+        let short = fresh.first(where: { $0.windowMinutes == shortMinutes })
+        let weekly = fresh.first(where: { $0.windowMinutes >= 10_080 })
+        return [
+            QuotaPeriodMetric(id: "short", title: title, compactTitle: compact,
+                window: short, delayedSampleAt: delayed(short)),
+            QuotaPeriodMetric(id: "weekly", title: "每周", compactTitle: "周",
+                window: weekly, delayedSampleAt: delayed(weekly))
+        ]
     }
     var quotaDisplayValue: String { effectiveQuota()?.remainingPercent.oneDecimalPercent ?? "--" }
     var tokenDisplayValue: String { tokenUsageKnown ? todayUsage.totalTokens.compactTokenString : "--" }

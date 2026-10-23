@@ -53,6 +53,7 @@ swiftc -sdk "$SDKROOT" -swift-version 6 -strict-concurrency=complete -parse-as-l
   "$project_dir/Sources/AssistantIdentity.swift" \
   "$project_dir/Sources/UsageModels.swift" \
   "$project_dir/Sources/AdditionalAssistantReader.swift" \
+  "$project_dir/Sources/ClaudeDesktopTelemetry.swift" \
   "$project_dir/Tests/AdditionalTelemetrySelfTest.swift" \
   -o "$additional_test"
 "$additional_test"

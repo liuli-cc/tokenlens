@@ -6,11 +6,27 @@ import CoreFoundation
 actor AdditionalAssistantReader {
     private let home: URL
     private let appSupport: URL
+    private let observeDesktopUI: Bool
     private var cache: [String: CachedFile] = [:]
+    struct WeeklySample: Codable {
+        let usedPercent: Double
+        let at: Date
+        let surfaceKey: String
+    }
+    private var claudeWeekly: WeeklySample?
+    private var weeklySavedAt: Date?
+    private let weeklyCacheURL: URL
 
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, appSupport: URL? = nil) {
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, appSupport: URL? = nil, observeDesktopUI: Bool = true) {
         self.home = home
         self.appSupport = appSupport ?? home.appendingPathComponent("Library/Application Support")
+        self.observeDesktopUI = observeDesktopUI
+        let weeklyURL = (appSupport ?? home.appendingPathComponent("Library/Application Support"))
+            .appendingPathComponent("TokenLens/claude-weekly-quota.json")
+        self.weeklyCacheURL = weeklyURL
+        if observeDesktopUI, let data = try? Data(contentsOf: weeklyURL) {
+            self.claudeWeekly = try? JSONDecoder().decode(WeeklySample.self, from: data)
+        }
     }
 
     func read(now: Date = Date()) async -> [IslandAssistant: UsageSnapshot] {
@@ -28,20 +44,98 @@ actor AdditionalAssistantReader {
         if !claude.tokenUsageKnown {
             claude.metricsDiagnostic = "Claude 桌面聊天/Cowork 未返回令牌指标；Claude Code 记录独立，不计入此岛"
         }
+        // New Desktop Code versions keep selected models in session metadata,
+        // even when their transcripts live outside the Desktop-owned roots.
+        if let selected = desktopModel(now: now) {
+            claude.currentModel = selected
+            claude.metricsDiagnostic = (claude.metricsDiagnostic ?? "") + "；模型取自最近活跃桌面会话"
+        }
         if let data = try? Data(contentsOf: appSupport.appendingPathComponent("Claude/plan-usage-history.json")),
            let document = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let quota = Self.claudeQuota(document, now: now) {
             claude.quota = quota.primary
             claude.secondaryQuota = quota.secondary
             claude.quotaUpdatedAt = quota.at
+            claude.quotaResetTimeUnavailable = quota.primary.resetsAt == nil
             claude.metricsDiagnostic = claude.tokenUsageKnown
                 ? "本机 Desktop/Cowork 响应用量；额度为 Claude 本机服务端采样，余额未返回"
                 : "Claude Desktop/Cowork 令牌未返回；额度为 Claude 本机服务端采样；独立 Code 记录未计入"
+        }
+        let visible = observeDesktopUI ? await ClaudeDesktopTelemetry.read() : ClaudeDesktopTelemetry.Visible()
+        if let selected = visible.model { claude.currentModel = selected }
+        if let used = visible.weeklyUsedPercent, let key = visible.surfaceKey {
+            let changed = claudeWeekly?.usedPercent != used || claudeWeekly?.surfaceKey != key
+            claudeWeekly = WeeklySample(usedPercent: used, at: now, surfaceKey: key)
+            if changed || now.timeIntervalSince(weeklySavedAt ?? .distantPast) >= 60,
+               let data = try? JSONEncoder().encode(claudeWeekly) {
+                try? FileManager.default.createDirectory(at: weeklyCacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? data.write(to: weeklyCacheURL, options: [.atomic])
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: weeklyCacheURL.path)
+                weeklySavedAt = now
+            }
+        }
+        Self.applyVisibleQuota(visible, weekly: claudeWeekly, to: &claude, now: now)
+        if visible.usedPercent != nil {
+            claude.metricsDiagnostic = (claude.metricsDiagnostic ?? "") + "；剩余额度取自 Claude 当前界面"
+        }
+        if claude.quotaPeriods(now: now).last?.window == nil {
+            claude.metricsDiagnostic = (claude.metricsDiagnostic ?? "") + "；周额度未读取或已过期，可展开 Claude 的用量菜单刷新"
+        }
+        if observeDesktopUI && !visible.accessibilityTrusted && claude.effectiveQuota(now: now) == nil {
+            claude.metricsDiagnostic = (claude.metricsDiagnostic ?? "") + "；读取 Claude 界面额度需在系统设置中开启 TokenLens 辅助功能权限"
         }
         // Prune parsed digests when files disappear; do not retain chat content.
         let live = Set((workFiles + codeFiles + claudeFiles).map { $0.url.path })
         cache = cache.filter { live.contains($0.key) }
         return [.workBuddy: work, .claude: claude, .codeBuddy: code]
+    }
+
+    static func applyVisibleQuota(_ visible: ClaudeDesktopTelemetry.Visible, weekly: WeeklySample?,
+                                  to snapshot: inout UsageSnapshot, now: Date) {
+        if let used = visible.usedPercent {
+            // A live short-window reading replaces the sampled one; a sampled
+            // weekly value stays (with its own sample time) until the UI reports one.
+            snapshot.quota = RateLimitWindow(usedPercent: used, windowMinutes: 300, resetsAt: nil, planType: nil, sampledAt: now)
+            snapshot.quotaUpdatedAt = now
+            snapshot.quotaResetTimeUnavailable = true
+        }
+        if let weekly, weekly.surfaceKey == visible.surfaceKey,
+           weekly.usedPercent.isFinite, (0...100).contains(weekly.usedPercent),
+           now.timeIntervalSince(weekly.at) >= -5, now.timeIntervalSince(weekly.at) <= 900 {
+            snapshot.secondaryQuota = RateLimitWindow(usedPercent: weekly.usedPercent, windowMinutes: 10_080,
+                resetsAt: nil, planType: nil, sampledAt: weekly.at)
+            snapshot.quotaResetTimeUnavailable = true
+        }
+    }
+
+    private func desktopModel(now: Date) -> String? {
+        let root = appSupport.appendingPathComponent("Claude/claude-code-sessions")
+        guard let iterator = FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return nil }
+        var newest: (at: Date, model: String)?
+        var visited = 0
+        for case let url as URL in iterator {
+            visited += 1
+            if visited > 5_000 { break }
+            if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+                iterator.skipDescendants(); continue
+            }
+            guard url.pathExtension == "json",
+                  let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_048_576,
+                  let data = try? Data(contentsOf: url),
+                  let document = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let selected = Self.desktopModel(document, now: now) else { continue }
+            if newest == nil || selected.at > newest!.at { newest = selected }
+        }
+        return newest?.model
+    }
+
+    static func desktopModel(_ document: [String: Any], now: Date) -> (at: Date, model: String)? {
+        guard document["isArchived"] as? Bool != true,
+              let at = date(document["lastActivityAt"]), at <= now.addingTimeInterval(5),
+              now.timeIntervalSince(at) <= 8 * 86_400,
+              let selected = model(document["model"]) else { return nil }
+        return (at, selected)
     }
 
     struct Record: Sendable {
@@ -318,21 +412,47 @@ actor AdditionalAssistantReader {
         let secondary: RateLimitWindow?
         let at: Date
     }
+    // Claude Desktop writes plan-usage-history only every few hours. Older
+    // samples are still shown, labelled with their sample time: the five-hour
+    // window for up to one hour, the weekly window for up to six hours.
+    static let claudeShortSampleAge: TimeInterval = 3_600
+    static let claudeWeeklySampleAge: TimeInterval = 21_600
+    private static func sampleAge(_ minutes: Int) -> TimeInterval {
+        minutes >= 10_080 ? claudeWeeklySampleAge : claudeShortSampleAge
+    }
+
     static func claudeQuota(_ document: [String: Any], now: Date) -> ClaudeQuota? {
         guard let samples = document["samples"] as? [[String: Any]] else { return nil }
         for sample in samples.sorted(by: { (date($0["t"]) ?? .distantPast) > (date($1["t"]) ?? .distantPast) }) {
-            guard let at = date(sample["t"]), at <= now.addingTimeInterval(5), now.timeIntervalSince(at) <= 900,
+            guard let at = date(sample["t"]), at <= now.addingTimeInterval(5),
+                  now.timeIntervalSince(at) <= claudeWeeklySampleAge,
                   let usage = sample["u"] as? [String: Any] else { continue }
             func window(_ value: Any?, minutes: Int) -> RateLimitWindow? {
                 guard let raw = value as? [String: Any], let number = raw["utilization"] as? NSNumber,
                       CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
                       (0...100).contains(number.doubleValue),
                       let reset = date(raw["resets_at"]), reset > now else { return nil }
-                return RateLimitWindow(usedPercent: number.doubleValue, windowMinutes: minutes, resetsAt: reset, planType: nil)
+                return RateLimitWindow(usedPercent: number.doubleValue, windowMinutes: minutes, resetsAt: reset, planType: nil,
+                                       sampledAt: at, maxAge: sampleAge(minutes))
             }
             let primary = window(usage["five_hour"], minutes: 300)
             let secondary = window(usage["seven_day"], minutes: 10_080)
             if let first = primary ?? secondary { return ClaudeQuota(primary: first, secondary: primary == nil ? nil : secondary, at: at) }
+            // Desktop history v2 stores utilization as fh/sd and deliberately
+            // omits reset times. Use only fresh reported percentages; never
+            // invent a reset time or infer 100% after a reset.
+            if nonnegativeInteger(document["version"]) == 2 {
+                func compact(_ key: String, minutes: Int) -> RateLimitWindow? {
+                    guard let number = usage[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          number.doubleValue.isFinite, (0...100).contains(number.doubleValue) else { return nil }
+                    return RateLimitWindow(usedPercent: number.doubleValue, windowMinutes: minutes, resetsAt: nil, planType: nil,
+                                           sampledAt: at, maxAge: sampleAge(minutes))
+                }
+                let primary = compact("fh", minutes: 300)
+                let secondary = compact("sd", minutes: 10_080)
+                if let first = primary ?? secondary { return ClaudeQuota(primary: first, secondary: primary == nil ? nil : secondary, at: at) }
+            }
+            return nil // The latest sample supersedes older account samples.
         }
         return nil
     }

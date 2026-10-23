@@ -1,0 +1,73 @@
+{
+  "composition": "TokenLens-Work-In-Flow",
+  "durationSeconds": 32,
+  "width": 1920,
+  "height": 1080,
+  "fps": 60,
+  "bpm": 120,
+  "audio": {
+    "durationSeconds": 32.0,
+    "sampleRate": 48000,
+    "channels": 2,
+    "samples": 1536000
+  },
+  "lintAndTypes": "passed",
+  "checkedFrameImages": [
+    0,
+    120,
+    390,
+    510,
+    585,
+    780,
+    946,
+    960,
+    977,
+    994,
+    1100,
+    1320,
+    1392,
+    1430,
+    1550,
+    1600,
+    1760,
+    1919
+  ],
+  "renderBackend": "ANGLE",
+  "studioPlayback": {
+    "playingObserved": true,
+    "muted": false,
+    "rate": 1,
+    "errorOverlay": null,
+    "consoleWarningsOrErrors": []
+  },
+  "mp4Exported": true,
+  "sourceSha256": "9644b2e5ae45517ba9e4a26933a0f4e8f9749392ddd48a33d042f0f4ef4cce43",
+  "export": {
+    "path": "/Users/liuli/Desktop/TokenLens_宣传片.mp4",
+    "bytes": 7075717,
+    "sha256": "03a80ac3f6c9236c6c643a158441f73a15d1f239b88fd78077446267acadfd41",
+    "video": {
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080,
+      "fps": 60,
+      "frames": 1920,
+      "durationSeconds": 32
+    },
+    "audio": {
+      "codec": "aac",
+      "sampleRate": 48000,
+      "channels": 2,
+      "durationSeconds": 32
+    },
+    "fullVideoAndAudioDecode": "passed",
+    "representativeMp4FramesCheckedSeconds": [
+      2,
+      6.5,
+      17,
+      24,
+      31.5
+    ],
+    "visualChecks": "passed"
+  }
+}

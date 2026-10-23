@@ -16,6 +16,7 @@ swiftc -D TOKENLENS_PREVIEW -swift-version 6 -strict-concurrency=complete -parse
   "$project_dir/Sources/DeepSeekStatus.swift" \
   "$project_dir/Sources/DeepSeekActivity.swift" \
   "$project_dir/Sources/AdditionalAssistantReader.swift" \
+  "$project_dir/Sources/ClaudeDesktopTelemetry.swift" \
   "$project_dir/Sources/UsageStore.swift" \
   "$project_dir/Sources/IslandGeometry.swift" \
   "$project_dir/Sources/CompletionNoticeQueue.swift" \
