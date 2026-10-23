@@ -188,12 +188,7 @@ struct DashboardView: View {
     }
 
     private var freshQuotaWindows: [RateLimitWindow] {
-        let now = Date()
-        // The timestamp check is shared with the primary metric; individual
-        // windows that have already reset are excluded instead of reused.
-        guard data.effectiveQuota(now: now) != nil else { return [] }
-        return [data.quota, data.secondaryQuota].compactMap { $0 }
-            .filter { $0.resetsAt.map { $0 > now } ?? false }
+        data.freshQuotaWindows()
     }
 
     @ViewBuilder private var quotaWindows: some View {
@@ -235,6 +230,17 @@ struct DashboardView: View {
 
     private var heroMetrics: some View {
         HStack(spacing: 0) {
+            if data.separatesQuotaPeriods {
+                ForEach(data.quotaPeriods()) { period in
+                    QuotaMetric(value: period.value, title: period.title + "剩余额度",
+                        detail: period.sampleNote
+                            ?? period.window?.resetsAt.map { $0.formatted(date: .abbreviated, time: .shortened) + " 重置" }
+                            ?? (period.window == nil ? "未读取或已过期" : "重置时间未提供"),
+                        percent: period.window?.remainingPercent, isBalance: false)
+                        .frame(maxWidth: .infinity)
+                    Hairline()
+                }
+            } else {
             QuotaMetric(
                 value: store.activeMetricValue,
                 title: store.activeMetricTitle,
@@ -245,6 +251,7 @@ struct DashboardView: View {
                 .frame(maxWidth: .infinity)
 
             Hairline()
+            }
 
             ContextMetric(
                 current: data.contextUsedTokens,
@@ -741,7 +748,7 @@ private struct MethodologyView: View {
                 .font(.system(size: 15, weight: .semibold))
 
             MethodRow(title: "Token 消耗", detail: "只汇总软件实际报告的使用计数。未取得数据时显示 --，不把日志行数或费用反推成 Token。")
-            MethodRow(title: "额度 / 余额", detail: "账户额度来自服务器返回值，多个限制窗口取最紧的一项；超过 15 分钟或已重置的样本不再显示。余额显示实际返回金额和采样时间。")
+            MethodRow(title: "额度 / 余额", detail: "账户额度来自服务器返回值或 Claude 的用量控件；短周期与每周额度分开显示，每项超过 15 分钟或已重置后失效。余额显示实际返回金额和采样时间。")
             MethodRow(title: "缓存命中率", detail: "缓存读取 Token / 全部输入 Token；包含不同软件分别报告的未缓存、缓存读取与缓存写入。缺少分项时显示 --。")
             MethodRow(title: "上下文", detail: "优先采用软件报告的当前长度。Codex/Harness 按最近响应估算并标为 ≈，后续工具消息和压缩变化可能尚未反映；缺少窗口时显示 --。")
             MethodRow(title: "近期调用", detail: "只统计有唯一调用或响应 ID 的实际模型请求；重试、重复累计、配置变更和一般日志行不会算作新调用。")

@@ -34,6 +34,29 @@ private final class PreviewDelegate: NSObject, NSApplicationDelegate {
             let export = args.firstIndex(of: "--export").flatMap { $0 + 1 < args.count ? URL(fileURLWithPath: args[$0 + 1], isDirectory: true) : nil }
             if let export { try? FileManager.default.createDirectory(at: export, withIntermediateDirectories: true) }
             try? await Task.sleep(for: .milliseconds(600))
+            if args.contains("--quota-periods"), let export {
+                for (name, weekly) in [("quota-periods", Optional(4.0)), ("weekly-unavailable", nil)] {
+                    var sample = UsageSnapshot()
+                    sample.currentSource = "Claude Desktop / Cowork"
+                    sample.currentModel = "Opus 5.5"
+                    sample.quotaResetTimeUnavailable = true
+                    sample.quotaUpdatedAt = Date()
+                    sample.quota = RateLimitWindow(usedPercent: 8, windowMinutes: 300, resetsAt: nil, planType: nil)
+                    sample.secondaryQuota = weekly.map { RateLimitWindow(usedPercent: $0, windowMinutes: 10_080, resetsAt: nil, planType: nil) }
+                    self.store.previewQuotaSnapshot(sample, assistant: .claude)
+                    controller.previewReset()
+                    try? await Task.sleep(for: .milliseconds(400))
+                    try? controller.previewCapture(to: export.appendingPathComponent(name + "-compact.png"))
+                    controller.previewPage(.overview)
+                    try? await Task.sleep(for: .milliseconds(900))
+                    try? controller.previewCapture(to: export.appendingPathComponent(name + "-expanded.png"))
+                }
+                print("Separated quota native previews exported")
+                fflush(stdout)
+                controller.stop()
+                NSApp.terminate(nil)
+                return
+            }
             let sequence: [IslandAssistant] = args.contains("--all") ? IslandAssistant.allCases : [self.store.activeAssistant]
             var frame = 0
             var diagnostics: [[String: Any]] = []

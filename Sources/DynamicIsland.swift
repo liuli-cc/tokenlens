@@ -729,15 +729,27 @@ private struct DynamicIslandView: View {
                 .help("\(assistant) · 当前模型：\(data.currentModel)\n\(data.metricsSource)")
                 .accessibilityLabel("当前模型 \(data.currentModel)，\(activity ? "任务进行中" : "未观察到进行中的任务")")
                 Color.clear.frame(width: viewModel.layout.gapWidth).allowsHitTesting(false).accessibilityHidden(true)
-                Text(IslandCompactText.metric(metric, characterBudget: viewModel.layout.rightWing < 38 ? 4 : 7))
-                    .font(.system(size: viewModel.layout.rightWing >= 42 ? 10.5 : 9, weight: .semibold, design: .rounded))
+                Group {
+                    if data.separatesQuotaPeriods && viewModel.completionNotice == nil {
+                        VStack(spacing: 1) {
+                            ForEach(data.quotaPeriods()) { period in
+                                Text(period.compactTitle + " " + IslandCompactText.metric(period.value, characterBudget: 4))
+                                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                            }
+                        }
+                    } else {
+                        Text(IslandCompactText.metric(metric, characterBudget: viewModel.layout.rightWing < 38 ? 4 : 7))
+                            .font(.system(size: viewModel.layout.rightWing >= 42 ? 10.5 : 9, weight: .semibold, design: .rounded))
+                    }
+                }
                     .monospacedDigit().foregroundStyle(accentGradient)
                     .lineLimit(1).minimumScaleFactor(0.7)
                     .padding(.horizontal, viewModel.layout.rightWing >= 38 ? 3 : 1)
                     .frame(width: viewModel.layout.rightWing, height: viewModel.layout.bandHeight)
                     .clipped().contentShape(Rectangle()).onHover(perform: onHover).onTapGesture(perform: onTap)
                     .help("\(metricTitle)：\(metric)\n\(store.activeMetricDetail)")
-                    .accessibilityLabel("\(metricTitle) \(metric)")
+                    .accessibilityLabel(data.separatesQuotaPeriods && viewModel.completionNotice == nil
+                        ? data.quotaPeriods().map { "\($0.title)剩余 \($0.value)" }.joined(separator: "，") : "\(metricTitle) \(metric)")
             }
         }
         .clipShape(crownShape)
@@ -831,9 +843,22 @@ private struct DynamicIslandView: View {
                     }
                 }
                 Spacer(minLength: 10)
+                if data.separatesQuotaPeriods {
+                    HStack(spacing: 12) {
+                        ForEach(data.quotaPeriods()) { period in
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(period.value).font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .monospacedDigit().foregroundStyle(accentGradient)
+                                Text(period.title + "剩余" + (period.sampleNote.map { " · " + $0 } ?? ""))
+                                    .font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
+                            }
+                        }
+                    }.help(store.activeMetricDetail)
+                } else {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(metric).font(.system(size: 17, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(accentGradient)
                     Text(metricTitle).font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.43))
+                }
                 }
             }
             HStack(spacing: 12) {

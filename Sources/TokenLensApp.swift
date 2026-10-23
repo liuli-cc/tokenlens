@@ -13,6 +13,24 @@ final class TokenLensAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        if CommandLine.arguments.contains("--check-claude-telemetry") {
+            Task {
+                let snapshot = await AdditionalAssistantReader().read()[.claude] ?? .empty
+                let report: [String: Any] = [
+                    "model": snapshot.currentModel,
+                    "remainingPercent": snapshot.effectiveQuota()?.remainingPercent as Any? ?? NSNull(),
+                    "quotaPeriods": snapshot.quotaPeriods().map { ["period": $0.title, "remaining": $0.value] },
+                    "accessibilityTrusted": AXIsProcessTrusted(),
+                    "source": snapshot.metricsSource,
+                    "diagnostic": snapshot.metricsDiagnostic ?? ""
+                ]
+                if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+                   let text = String(data: data, encoding: .utf8) { print(text) }
+                NSApp.terminate(nil)
+            }
+            return
+        }
+
         guard isAssistantRunning else {
             NSApp.terminate(nil)
             return

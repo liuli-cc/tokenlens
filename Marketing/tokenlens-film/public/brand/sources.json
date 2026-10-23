@@ -1,0 +1,11 @@
+{
+  "note": "Original application icon resources converted from ICNS to PNG without design edits. Provider icons identify compatible software; third-party names and icons remain their owners' property. TokenLens icon copied unchanged from product.",
+  "assets": {
+    "gpt-codex.png": "/Applications/ChatGPT.app/Contents/Resources/electron.icns",
+    "deepseek-harness.png": "/Applications/DeepSeek Harness.app/Contents/Resources/icon.icns",
+    "workbuddy.png": "/Applications/WorkBuddy AI.app/Contents/Resources/icon.icns",
+    "claude.png": "/Applications/Claude.app/Contents/Resources/electron.icns",
+    "codebuddy.png": "/Applications/CodeBuddy CN.app/Contents/Resources/CodeBuddy CN.icns",
+    "tokenlens.png": "windows/assets/icon.png"
+  }
+}

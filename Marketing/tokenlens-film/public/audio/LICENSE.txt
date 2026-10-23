@@ -1,0 +1,13 @@
+TokenLens Groove — original procedural soundtrack
+
+32 seconds, 120 BPM, 48 kHz stereo.
+
+All drums, bass, plucks, chords, and notification tones were synthesized by
+tools/create_soundtrack.py for this TokenLens promotional video. No external
+samples, recordings, or quoted melodies are included.
+
+The user may use, modify, distribute, and synchronize this generated soundtrack
+for TokenLens promotion, including commercial use. No attribution is required.
+
+This note documents the asset's provenance and intended permission. It does not
+claim exclusive copyright in generated material where local law does not grant it.

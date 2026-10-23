@@ -110,6 +110,7 @@ final class UsageStore: ObservableObject {
     var activeMetricValue: String {
         if activeAssistant == .deepSeek { return deepSeekStatus.balanceDisplayValue }
         let data = activeSnapshot
+        if data.separatesQuotaPeriods { return data.quotaPeriods().first?.value ?? "--" }
         return data.usesExternalModel || data.providerBalance != nil
             ? data.balanceDisplayValue : data.quotaDisplayValue
     }
@@ -117,6 +118,7 @@ final class UsageStore: ObservableObject {
     var activeMetricTitle: String {
         if activeAssistant == .deepSeek { return "账户余额" }
         let data = activeSnapshot
+        if data.separatesQuotaPeriods { return (data.quotaPeriods().first?.title ?? "短周期") + "剩余" }
         return data.usesExternalModel || data.providerBalance != nil ? "账户余额" : "剩余额度"
     }
 
@@ -129,10 +131,20 @@ final class UsageStore: ObservableObject {
         if let balance = data.providerBalance {
             return "官方接口 · " + balance.fetchedAt.formatted(date: .omitted, time: .shortened)
         }
+        if data.separatesQuotaPeriods {
+            let values = data.quotaPeriods().map { period in
+                "\(period.title)剩余 \(period.value)" + (period.sampleNote.map { "（\($0)）" } ?? "")
+            }.joined(separator: " · ")
+            return values + (data.quotaPeriods().last?.window == nil && activeAssistant == .claude
+                ? "；展开 Claude 用量菜单可刷新周额度" : "")
+        }
         if let quota = data.effectiveQuota(), let reset = quota.resetsAt {
             let window = quota.windowMinutes >= 1_440 ? "\(quota.windowMinutes / 1_440) 天窗口" : "\(quota.windowMinutes) 分钟窗口"
             let name = (data.quotaLimitName ?? data.quotaLimitID).map { "\($0) · " } ?? ""
             return "\(name)\(window) · \(reset.formatted(date: .abbreviated, time: .shortened)) 重置"
+        }
+        if data.quotaResetTimeUnavailable, data.effectiveQuota() != nil, let at = data.quotaUpdatedAt {
+            return "Claude 报告的剩余额度 · \(at.formatted(date: .omitted, time: .shortened)) · 重置时间未提供"
         }
         return data.quotaUpdatedAt == nil ? "未取得账户额度数据" : "额度缓存已过期，等待新的服务器数据"
     }
@@ -140,6 +152,13 @@ final class UsageStore: ObservableObject {
     private func completionBatch(_ completions: [TaskCompletionNotice], latest: TaskCompletionNotice?) -> [TaskCompletionNotice] {
         completions.isEmpty ? latest.map { [$0] } ?? [] : completions
     }
+
+    #if TOKENLENS_PREVIEW
+    func previewQuotaSnapshot(_ data: UsageSnapshot, assistant: IslandAssistant) {
+        additionalSnapshots[assistant] = data
+        setActiveAssistant(assistant)
+    }
+    #endif
 
     private func synchronizeNotice() {
         let next = completionQueue.current
